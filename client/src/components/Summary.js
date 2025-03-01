@@ -24,15 +24,12 @@ function Summary({
   const aggregatedSummary = {};
   summary.forEach((s) => {
     const key = `${s.story.summary} - ${s.story.description}`;
-    if (!aggregatedSummary[key]) {
-      aggregatedSummary[key] = {
-        votes: {},
-        finalEstimate: s.story.finalEstimate,
-      };
-    }
-    s.votes.forEach((v) => {
-      aggregatedSummary[key].votes[v.user] = v.vote;
-    });
+    // Overwrite with the latest result for each story
+    aggregatedSummary[key] = {
+      votes: {},
+      finalEstimate: s.story.finalEstimate,
+    };
+    s.votes.forEach((v) => (aggregatedSummary[key].votes[v.user] = v.vote));
   });
 
   const cards = Object.keys(aggregatedSummary).map((storyKey) => {

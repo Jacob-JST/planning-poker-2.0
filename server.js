@@ -2,7 +2,6 @@ require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const socketIo = require("socket.io");
-const fs = require("fs");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
 const sqlite3 = require("sqlite3").verbose();
@@ -20,7 +19,6 @@ const io = socketIo(server, {
 
 app.use(express.static("public"));
 
-// Initialize SQLite database
 const db = new sqlite3.Database("./sessions.db", (err) => {
   if (err) {
     console.error("Error opening database:", err.message);
@@ -36,7 +34,22 @@ const db = new sqlite3.Database("./sessions.db", (err) => {
       results TEXT
     )`,
       (err) => {
-        if (err) console.error("Error creating table:", err.message);
+        if (err) console.error("Error creating sessions table:", err.message);
+      }
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sessionId TEXT,
+      timestamp TEXT,
+      storySummary TEXT,
+      storyDescription TEXT,
+      finalEstimate TEXT,
+      votes TEXT,
+      FOREIGN KEY (sessionId) REFERENCES sessions(id)
+    )`,
+      (err) => {
+        if (err) console.error("Error creating results table:", err.message);
       }
     );
   }
@@ -75,24 +88,54 @@ function extractTextFromADF(content) {
   return text.trim();
 }
 
-// Helper function to get all sessions from DB
 function getSessions(callback) {
   db.all("SELECT * FROM sessions", (err, rows) => {
     if (err) {
       console.error("Error fetching sessions:", err.message);
       callback([]);
-    } else {
-      const sessions = rows.map((row) => ({
-        id: row.id,
-        sessionName: row.sessionName,
-        sprint: row.sprint,
-        sprintGoal: row.sprintGoal,
-        date: row.date,
-        results: JSON.parse(row.results || "[]"),
-      }));
-      callback(sessions);
+      return;
     }
+    const sessions = [];
+    let pending = rows.length;
+    if (pending === 0) return callback([]);
+
+    rows.forEach((row) => {
+      getSessionResults(row.id, (results) => {
+        sessions.push({
+          id: row.id,
+          sessionName: row.sessionName,
+          sprint: row.sprint,
+          sprintGoal: row.sprintGoal,
+          date: row.date,
+          results: results,
+        });
+        if (--pending === 0) callback(sessions);
+      });
+    });
   });
+}
+
+function getSessionResults(sessionId, callback) {
+  db.all(
+    "SELECT * FROM results WHERE sessionId = ?",
+    [sessionId],
+    (err, rows) => {
+      if (err) {
+        console.error("Error fetching results:", err.message);
+        callback([]);
+      } else {
+        const results = rows.map((row) => ({
+          story: {
+            summary: row.storySummary,
+            description: row.storyDescription,
+            finalEstimate: row.finalEstimate,
+          },
+          votes: JSON.parse(row.votes || "[]"),
+        }));
+        callback(results);
+      }
+    }
+  );
 }
 
 io.on("connection", (socket) => {
@@ -133,16 +176,21 @@ io.on("connection", (socket) => {
             if (err) {
               console.error("Error fetching current session:", err.message);
             } else if (row) {
-              const currentSession = {
-                id: row.id,
-                sessionName: row.sessionName,
-                sprint: row.sprint,
-                sprintGoal: row.sprintGoal,
-                date: row.date,
-                results: JSON.parse(row.results || "[]"),
-              };
-              console.log("Sending startSession to new user:", currentSession);
-              socket.emit("startSession", currentSession);
+              getSessionResults(currentSessionId, (results) => {
+                const currentSession = {
+                  id: row.id,
+                  sessionName: row.sessionName,
+                  sprint: row.sprint,
+                  sprintGoal: row.sprintGoal,
+                  date: row.date,
+                  results: results,
+                };
+                console.log(
+                  "Sending startSession to new user:",
+                  currentSession
+                );
+                socket.emit("startSession", currentSession);
+              });
             }
           }
         );
@@ -208,8 +256,46 @@ io.on("connection", (socket) => {
           socket.emit("jiraUpdateError", errorMessage);
         }
       }
-      saveResults();
-      io.emit("finalEstimateSubmitted");
+
+      // Update or insert the result with the final estimate
+      db.get(
+        "SELECT id FROM results WHERE sessionId = ? AND storySummary = ? AND storyDescription = ? ORDER BY timestamp DESC LIMIT 1",
+        [currentSessionId, currentStory.summary, currentStory.description],
+        (err, row) => {
+          if (err) {
+            console.error("Error checking existing result:", err.message);
+            saveResults(); // Fallback to insert if check fails
+          } else if (row) {
+            // Update existing result
+            db.run(
+              "UPDATE results SET finalEstimate = ?, votes = ? WHERE id = ?",
+              [
+                estimate,
+                JSON.stringify(
+                  Object.keys(votes).map((id) => ({
+                    user: users.find((u) => u.id === id)?.name || "Unknown",
+                    vote: votes[id],
+                  }))
+                ),
+                row.id,
+              ],
+              (err) => {
+                if (err) console.error("Error updating result:", err.message);
+                else {
+                  console.log(
+                    "Updated result with final estimate:",
+                    currentSessionId
+                  );
+                  getSessions((sessions) => io.emit("syncSessions", sessions));
+                }
+              }
+            );
+          } else {
+            saveResults(); // Insert new result if none exists
+          }
+          io.emit("finalEstimateSubmitted");
+        }
+      );
     }
   });
 
@@ -367,11 +453,11 @@ io.on("connection", (socket) => {
           return;
         }
         db.run(
-          "UPDATE sessions SET results = ? WHERE id = ?",
-          [JSON.stringify([]), sessionId],
+          "DELETE FROM results WHERE sessionId = ?",
+          [sessionId],
           (err) => {
             if (err)
-              console.error("Error resetting session results:", err.message);
+              console.error("Error clearing session results:", err.message);
             const session = {
               id: row.id,
               sessionName: row.sessionName,
@@ -400,14 +486,22 @@ io.on("connection", (socket) => {
       db.run("DELETE FROM sessions WHERE id = ?", [sessionId], (err) => {
         if (err) console.error("Error deleting session:", err.message);
         else {
-          if (sessionId === currentSessionId) {
-            currentSessionId = null;
-            stories = [];
-            votes = {};
-            io.emit("updateUsers", users);
-          }
-          console.log("Deleted session:", sessionId);
-          getSessions((sessions) => io.emit("syncSessions", sessions));
+          db.run(
+            "DELETE FROM results WHERE sessionId = ?",
+            [sessionId],
+            (err) => {
+              if (err)
+                console.error("Error deleting session results:", err.message);
+              if (sessionId === currentSessionId) {
+                currentSessionId = null;
+                stories = [];
+                votes = {};
+                io.emit("updateUsers", users);
+              }
+              console.log("Deleted session:", sessionId);
+              getSessions((sessions) => io.emit("syncSessions", sessions));
+            }
+          );
         }
       });
     }
@@ -453,21 +547,23 @@ io.on("connection", (socket) => {
             console.error("Error fetching session for summary:", err?.message);
             return;
           }
-          const currentSession = {
-            id: row.id,
-            sessionName: row.sessionName,
-            sprint: row.sprint,
-            sprintGoal: row.sprintGoal,
-            date: row.date,
-            results: JSON.parse(row.results || "[]"),
-          };
-          console.log("Sending sessionSummary:", currentSession.results);
-          io.emit("sessionSummary", currentSession.results);
-          sendToSlack(currentSession.results, currentSession);
-          currentSessionId = null;
-          stories = [];
-          votes = {};
-          getSessions((sessions) => io.emit("syncSessions", sessions));
+          getSessionResults(currentSessionId, (results) => {
+            const currentSession = {
+              id: row.id,
+              sessionName: row.sessionName,
+              sprint: row.sprint,
+              sprintGoal: row.sprintGoal,
+              date: row.date,
+              results: results,
+            };
+            console.log("Sending sessionSummary:", currentSession.results);
+            io.emit("sessionSummary", currentSession.results);
+            sendToSlack(currentSession.results, currentSession);
+            currentSessionId = null;
+            stories = [];
+            votes = {};
+            getSessions((sessions) => io.emit("syncSessions", sessions));
+          });
         }
       );
     }
@@ -552,43 +648,51 @@ function saveResults() {
   };
   if (currentSessionId) {
     db.get(
-      "SELECT results FROM sessions WHERE id = ?",
-      [currentSessionId],
+      "SELECT id FROM results WHERE sessionId = ? AND storySummary = ? AND storyDescription = ? ORDER BY timestamp DESC LIMIT 1",
+      [currentSessionId, currentStory.summary, currentStory.description],
       (err, row) => {
         if (err) {
-          console.error("Error fetching session results:", err.message);
-          return;
-        }
-        const results = row ? JSON.parse(row.results || "[]") : [];
-        results.push(result);
-        db.run(
-          "UPDATE sessions SET results = ? WHERE id = ?",
-          [JSON.stringify(results), currentSessionId],
-          (err) => {
-            if (err)
-              console.error("Error saving results to session:", err.message);
-            else {
-              console.log("Saved results for session:", currentSessionId);
-              getSessions((sessions) => io.emit("syncSessions", sessions));
+          console.error("Error checking existing result:", err.message);
+        } else if (row) {
+          db.run(
+            "UPDATE results SET finalEstimate = ?, votes = ?, timestamp = ? WHERE id = ?",
+            [
+              currentStory.finalEstimate || null,
+              JSON.stringify(result.votes),
+              new Date().toISOString(),
+              row.id,
+            ],
+            (err) => {
+              if (err) console.error("Error updating result:", err.message);
+              else {
+                console.log("Updated result for session:", currentSessionId);
+                getSessions((sessions) => io.emit("syncSessions", sessions));
+              }
             }
-          }
-        );
+          );
+        } else {
+          db.run(
+            "INSERT INTO results (sessionId, timestamp, storySummary, storyDescription, finalEstimate, votes) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+              currentSessionId,
+              new Date().toISOString(),
+              currentStory.summary,
+              currentStory.description,
+              currentStory.finalEstimate || null,
+              JSON.stringify(result.votes),
+            ],
+            (err) => {
+              if (err) console.error("Error saving result:", err.message);
+              else {
+                console.log("Saved result for session:", currentSessionId);
+                getSessions((sessions) => io.emit("syncSessions", sessions));
+              }
+            }
+          );
+        }
       }
     );
   }
-
-  fs.readFile("results.json", (err, data) => {
-    let results = [];
-    if (!err && data) results = JSON.parse(data);
-    results.push({
-      timestamp: new Date().toISOString(),
-      sessionId: currentSessionId,
-      ...result,
-    });
-    fs.writeFile("results.json", JSON.stringify(results, null, 2), (err) => {
-      if (err) console.error("Error saving results:", err);
-    });
-  });
 }
 
 async function sendToSlack(sessionResults, currentSession) {
