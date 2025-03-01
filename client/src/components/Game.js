@@ -1,0 +1,327 @@
+import React, { useState, useEffect } from 'react';
+import { Box, Typography, Button, TextField, Drawer, List, ListItem, ListItemText, Modal, IconButton, ListSubheader, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
+import Brightness7Icon from '@mui/icons-material/Brightness7';
+import Brightness4Icon from '@mui/icons-material/Brightness4';
+
+function Game({ myName, isAdmin, adminId, users: propUsers, story: propStory, myVote: propMyVote, votes: propVotes, timer: propTimer, showVotes: propShowVotes, socket, darkMode, onDarkModeToggle, sessionName }) {
+  const [summaryInput, setSummaryInput] = useState('');
+  const [descriptionInput, setDescriptionInput] = useState('');
+  const [finalEstimate, setFinalEstimate] = useState('');
+  const [jiraUrl, setJiraUrl] = useState('');
+  const [submitDisabled, setSubmitDisabled] = useState(false);
+  const [timerDisabled, setTimerDisabled] = useState(false);
+  const [endVotingDisabled, setEndVotingDisabled] = useState(true);
+  const [estimateDisabled, setEstimateDisabled] = useState(true);
+  const [finalEstimateSubmitted, setFinalEstimateSubmitted] = useState(false);
+  const [localStory, setLocalStory] = useState(propStory);
+  const [localTimer, setLocalTimer] = useState(propTimer);
+  const [timerColor, setTimerColor] = useState('inherit');
+  const [localShowVotes, setLocalShowVotes] = useState(propShowVotes);
+  const [localVotes, setLocalVotes] = useState(propVotes);
+  const [localUsers, setLocalUsers] = useState(propUsers);
+  const [localMyVote, setLocalMyVote] = useState(propMyVote);
+  const [cardsEnabled, setCardsEnabled] = useState(false);
+  const [jiraModalOpen, setJiraModalOpen] = useState(false);
+  const [jiraImportUrl, setJiraImportUrl] = useState('');
+  const [pulseAnimation, setPulseAnimation] = useState(false);
+  const [storyAnimation, setStoryAnimation] = useState(false);
+  const fibonacci = [1, 2, 3, 5, 8, 13, 21, 34];
+
+  useEffect(() => {
+    console.log('Game component mounted. isAdmin:', isAdmin, 'users:', propUsers, 'socket connected:', socket.connected);
+
+    socket.on('updateStory', (newStory) => {
+      console.log('Received updateStory:', newStory);
+      setLocalStory(newStory);
+      setTimerDisabled(false);
+      setEndVotingDisabled(finalEstimateSubmitted);
+      setEstimateDisabled(true);
+      setFinalEstimate('');
+      setLocalMyVote(null);
+      setCardsEnabled(true);
+      setLocalTimer('');
+      setPulseAnimation(false);
+      setStoryAnimation(true);
+      setTimeout(() => setStoryAnimation(false), 1000);
+    });
+
+    socket.on('updateVotes', (votesData, usersData) => {
+      console.log('Received updateVotes:', votesData, 'Users:', usersData);
+      setLocalVotes(votesData);
+      setLocalUsers(usersData);
+    });
+
+    socket.on('timerUpdate', (timeLeft) => {
+      console.log('Timer update:', timeLeft);
+      if (timeLeft > 0) {
+        const minutes = Math.floor(timeLeft / 60);
+        const secs = timeLeft % 60;
+        const timeStr = `${minutes}:${secs < 10 ? '0' + secs : secs}`;
+        setLocalTimer(timeStr);
+        setTimerColor(timeLeft <= 10 ? 'red' : 'inherit');
+        setPulseAnimation(false);
+      } else {
+        setLocalTimer('0:00');
+        setSubmitDisabled(false);
+        setEndVotingDisabled(true);
+        setEstimateDisabled(false);
+        setCardsEnabled(false);
+        setPulseAnimation(true);
+        setTimeout(() => {
+          setPulseAnimation(false);
+          setTimerColor('inherit');
+        }, 2000);
+      }
+    });
+
+    socket.on('showVotes', (votesData, usersData) => {
+      console.log('Showing votes:', votesData, usersData);
+      setLocalShowVotes(true);
+      setLocalVotes(votesData);
+      setLocalUsers(usersData);
+      setSubmitDisabled(false);
+      setTimerDisabled(false);
+      setEndVotingDisabled(true);
+      setEstimateDisabled(false);
+      setCardsEnabled(false);
+    });
+
+    socket.on('hideVotes', () => {
+      console.log('Hiding votes');
+      setLocalShowVotes(false);
+    });
+
+    socket.on('updateUsers', (usersData) => {
+      console.log('Received updateUsers:', usersData);
+      setLocalUsers(usersData);
+    });
+
+    socket.on('jiraImportResult', (data) => {
+      console.log('Jira import result:', data);
+      if (data.error) {
+        console.error('Jira import error:', data.error);
+        alert('Failed to import Jira issue: ' + data.error);
+      } else {
+        setSummaryInput(data.summary);
+        setDescriptionInput(data.description);
+        setJiraUrl(data.jiraUrl);
+        setJiraModalOpen(false);
+        setJiraImportUrl('');
+      }
+    });
+
+    socket.on('jiraUpdateError', (error) => {
+      console.error('Jira update error:', error);
+      alert('Failed to update Jira story points: ' + error);
+    });
+
+    return () => {
+      socket.off('updateStory');
+      socket.off('updateVotes');
+      socket.off('timerUpdate');
+      socket.off('showVotes');
+      socket.off('hideVotes');
+      socket.off('updateUsers');
+      socket.off('jiraImportResult');
+      socket.off('jiraUpdateError');
+    };
+  }, [socket, isAdmin, propUsers, finalEstimateSubmitted]);
+
+  const handleVote = (number) => {
+    if (!cardsEnabled) return;
+    console.log('Voting:', number);
+    socket.emit('vote', { vote: number });
+    setLocalMyVote(number);
+  };
+
+  const handleSubmitStory = () => {
+    if (!submitDisabled && summaryInput.trim() && descriptionInput.trim()) {
+      const newStory = { summary: summaryInput, description: descriptionInput, jiraUrl: jiraUrl || null };
+      console.log('Submitting story:', newStory);
+      socket.emit('newStory', newStory);
+      setSummaryInput('');
+      setDescriptionInput('');
+      setSubmitDisabled(true);
+      setFinalEstimateSubmitted(false);
+    }
+  };
+
+  const handleSubmitFinalEstimate = () => {
+    if (!estimateDisabled && finalEstimate) {
+      console.log('Submitting final estimate:', finalEstimate, 'Jira URL:', jiraUrl);
+      socket.emit('submitFinalEstimate', { estimate: finalEstimate, jiraUrl });
+      setFinalEstimate('');
+      setEstimateDisabled(true);
+      setEndVotingDisabled(true);
+      setFinalEstimateSubmitted(true);
+      setJiraUrl('');
+    }
+  };
+
+  const handleStartTimer = (seconds) => {
+    if (!timerDisabled) {
+      console.log('Starting timer:', seconds);
+      socket.emit('startTimer', seconds);
+      setTimerDisabled(true);
+    }
+  };
+
+  const handleEndVoting = () => {
+    if (!endVotingDisabled) {
+      console.log('Ending voting');
+      socket.emit('endVoting');
+      setEndVotingDisabled(true);
+      setSubmitDisabled(false);
+      setTimerDisabled(false);
+      setEstimateDisabled(false);
+    }
+  };
+
+  const handleEndSession = () => {
+    console.log('Ending session');
+    socket.emit('endSession');
+  };
+
+  const handleJiraImport = () => {
+    if (!jiraImportUrl.trim()) return;
+    console.log('Importing Jira:', jiraImportUrl);
+    socket.emit('jiraImport', jiraImportUrl);
+  };
+
+  return (
+    <Box sx={{ display: 'flex', height: '100vh' }}>
+      <Drawer variant="permanent" sx={{ width: 220, flexShrink: 0, '& .MuiDrawer-paper': { width: 220, boxSizing: 'border-box' } }}>
+        <List sx={{ padding: 0 }}>
+          <ListSubheader sx={{ display: 'flex', bgcolor: 'inherit', padding: '0 8px' }}>
+            <Typography variant="subtitle2" sx={{ width: 160, textAlign: 'left', pl: 2 }}>User</Typography>
+            <Typography variant="subtitle2" sx={{ width: 48, textAlign: 'center' }}>Vote</Typography>
+          </ListSubheader>
+          {localUsers.length > 0 ? (
+            localUsers.map((u) => (
+              <ListItem key={`${u.id}-${u.name}`} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 8px' }}>
+                <ListItemText primary={u.name} sx={{ color: u.voted ? 'green' : 'inherit', flex: 'none', width: 160 }} />
+                {localShowVotes && localVotes[u.id] && (
+                  <Button
+                    variant="contained"
+                    sx={{ m: 0, minWidth: '48px', height: '36px', bgcolor: 'primary.main', color: 'white', pointerEvents: 'none', '&:hover': { bgcolor: 'primary.dark' } }}
+                  >
+                    {localVotes[u.id]}
+                  </Button>
+                )}
+              </ListItem>
+            ))
+          ) : (
+            <ListItem>
+              <ListItemText primary="No users connected" />
+            </ListItem>
+          )}
+        </List>
+      </Drawer>
+      <Box sx={{ flexGrow: 1, p: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}>
+        <Typography variant="h4" sx={{ mb: 2 }}>{sessionName || 'Planning Poker'}</Typography>
+        <Box sx={{ position: 'absolute', top: 17, right: 60, display: 'flex', alignItems: 'center' }}>
+          <Typography
+            sx={{
+              color: timerColor,
+              animation: pulseAnimation ? 'pulse 0.5s ease-in-out 4' : 'none',
+              '@keyframes pulse': { '0%': { transform: 'scale(1)' }, '50%': { transform: 'scale(1.1)' }, '100%': { transform: 'scale(1)' } }
+            }}
+          >
+            {localTimer}
+          </Typography>
+        </Box>
+        <IconButton onClick={onDarkModeToggle} sx={{ position: 'absolute', top: 8, right: 8 }}>
+          {darkMode ? <Brightness4Icon /> : <Brightness7Icon />}
+        </IconButton>
+        <Box
+          sx={{
+            width: '100%',
+            maxWidth: 600,
+            height: 250,
+            border: '1px solid',
+            borderColor: 'grey.300',
+            borderRadius: 1,
+            mb: 2,
+            overflow: 'hidden',
+            animation: storyAnimation ? 'fadeIn 1s ease-out' : 'none',
+            '@keyframes fadeIn': { '0%': { opacity: 0, transform: 'translate(-20px, -20px)' }, '100%': { opacity: 1, transform: 'translate(0, 0)' } }
+          }}
+        >
+          {localStory ? (
+            <>
+              <TextField label="Summary" value={localStory.summary} InputProps={{ readOnly: true }} fullWidth sx={{ mb: 2 }} />
+              <TextField label="Description" value={localStory.description} InputProps={{ readOnly: true }} multiline rows={4} fullWidth />
+              {localStory.finalEstimate && (
+                <TextField label="Final Estimate" value={localStory.finalEstimate} InputProps={{ readOnly: true }} fullWidth sx={{ mt: 2 }} />
+              )}
+            </>
+          ) : (
+            <Typography sx={{ p: 2 }}>No story active</Typography>
+          )}
+        </Box>
+        <Box sx={{ my: 2 }}>
+          {fibonacci.map((num) => (
+            <Button
+              key={num}
+              variant={localMyVote === num ? 'contained' : 'outlined'}
+              onClick={() => handleVote(num)}
+              disabled={!cardsEnabled}
+              sx={{
+                m: 1, minWidth: '48px', height: '36px', bgcolor: localMyVote === num ? 'primary.main' : 'inherit',
+                color: localMyVote === num ? 'white' : 'inherit', '&:hover': { bgcolor: localMyVote === num ? 'primary.dark' : 'grey.200' },
+                '&.Mui-disabled': { bgcolor: localMyVote === num ? 'primary.main' : 'grey.300', color: localMyVote === num ? 'white' : 'grey.700', opacity: 1 }
+              }}
+            >
+              {num}
+            </Button>
+          ))}
+        </Box>
+        {isAdmin && (
+          <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <TextField label="Summary" value={summaryInput} onChange={(e) => setSummaryInput(e.target.value)} required sx={{ width: 300 }} />
+              <IconButton onClick={() => setJiraModalOpen(true)} sx={{ p: 0.5 }}>
+                <svg width="16" height="16" viewBox="0 0 250 250" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M249.51 125.26c0 68.86-55.88 124.74-124.74 124.74S0 194.12 0 125.26 55.88.51 124.74.51s124.74 55.88 124.74 124.75" fill="url(#paint0_linear_1_2)" />
+                  <path d="M128.22 65.38c-2.48 0-4.99 1.42-6.13 3.82l-55.88 90.79c-2.48 4.27-.71 9.26 3.56 11.74 2.14 1.07 4.63 1.42 6.77 1.07l30.43-4.63 25.08 40.62c2.48 4.27 7.47 6.05 11.74 3.56 4.27-2.48 6.05-7.47 3.56-11.74l-25.08-40.62 30.43-4.63c5.34-1.07 9.26-5.34 9.26-10.68 0-2.48-1.07-5.34-2.85-7.12L134.35 69.2c-1.43-2.49-4.28-3.82-6.13-3.82Z" fill="#fff" />
+                  <defs>
+                    <linearGradient id="paint0_linear_1_2" x1="124.74" y1=".51" x2="124.74" y2="250" gradientUnits="userSpaceOnUse">
+                      <stop stopColor="#253858" />
+                      <stop offset="1" stopColor="#1C2942" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </IconButton>
+            </Box>
+            <TextField label="Description" value={descriptionInput} onChange={(e) => setDescriptionInput(e.target.value)} required multiline rows={4} sx={{ width: 300 }} />
+            <Button id="submitStory" onClick={handleSubmitStory} variant="contained" disabled={submitDisabled}>Submit Story</Button>
+            <Box>
+              <Button id="timer30s" onClick={() => handleStartTimer(30)} variant="outlined" sx={{ mr: 1 }} disabled={timerDisabled}>30s</Button>
+              <Button id="timer1m" onClick={() => handleStartTimer(60)} variant="outlined" sx={{ mr: 1 }} disabled={timerDisabled}>1m</Button>
+              <Button id="timer5m" onClick={() => handleStartTimer(300)} variant="outlined" disabled={timerDisabled}>5m</Button>
+            </Box>
+            <Button id="endVoting" onClick={handleEndVoting} variant="outlined" disabled={endVotingDisabled}>End Voting</Button>
+            <FormControl sx={{ width: 300 }}>
+              <InputLabel>Final Estimate</InputLabel>
+              <Select value={finalEstimate} onChange={(e) => setFinalEstimate(e.target.value)} disabled={estimateDisabled} label="Final Estimate">
+                <MenuItem value=""><em>None</em></MenuItem>
+                {fibonacci.map((num) => <MenuItem key={num} value={num}>{num}</MenuItem>)}
+              </Select>
+            </FormControl>
+            <Button onClick={handleSubmitFinalEstimate} variant="contained" disabled={estimateDisabled || !finalEstimate}>Submit Final Estimate</Button>
+            <Button onClick={handleEndSession} variant="contained" color="secondary">End Session</Button>
+          </Box>
+        )}
+      </Box>
+      <Modal open={jiraModalOpen} onClose={() => setJiraModalOpen(false)} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <Box sx={{ bgcolor: 'background.paper', p: 4, borderRadius: 2, width: 400 }}>
+          <Typography variant="h6" gutterBottom>Import Jira Issue</Typography>
+          <TextField label="Jira Issue URL" value={jiraImportUrl} onChange={(e) => setJiraImportUrl(e.target.value)} fullWidth sx={{ mb: 2 }} />
+          <Button variant="contained" onClick={handleJiraImport}>Import</Button>
+        </Box>
+      </Modal>
+    </Box>
+  );
+}
+
+export default Game;
