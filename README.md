@@ -19,5 +19,5 @@ A real-time, multi-user planning poker application built with React (client) and
 ## Installation
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/<your-username>/planning-poker-2.0.git
+   git clone https://github.com/Jacob-JST/planning-poker-2.0.git
    cd planning-poker-2.0
