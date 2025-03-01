@@ -33,19 +33,6 @@ function App() {
     return () => newSocket.disconnect();
   }, []);
 
-  const theme = createTheme({
-    palette: {
-      mode: darkMode ? "dark" : "light",
-      primary: { main: "#1976d2" },
-      secondary: { main: "#dc004e" },
-      background: {
-        default: darkMode ? "#303030" : "#f5f5f5",
-        paper: darkMode ? "#424242" : "#fff",
-      },
-    },
-    typography: { fontFamily: "Roboto, sans-serif" },
-  });
-
   useEffect(() => {
     if (!socket) return;
 
@@ -175,10 +162,12 @@ function App() {
     };
   }, [socket, screen, myName, currentSession]);
 
-  const handleLogin = (name) => {
+  const handleLogin = (name, isAdmin, adminId) => {
     console.log("Logging in:", name);
     setMyName(name);
-    if (socket) socket.emit("login", name);
+    setIsAdmin(isAdmin);
+    setAdminId(adminId);
+    setScreen("home");
   };
 
   const handleDarkModeToggle = () => {
@@ -214,14 +203,28 @@ function App() {
     setScreen("summary");
   };
 
+  const theme = createTheme({
+    palette: {
+      mode: darkMode ? "dark" : "light",
+      primary: { main: "#1976d2" },
+      secondary: { main: "#dc004e" },
+      background: {
+        default: darkMode ? "#303030" : "#f5f5f5",
+        paper: darkMode ? "#424242" : "#fff",
+      },
+    },
+    typography: { fontFamily: "Roboto, sans-serif" },
+  });
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       {screen === "login" && (
         <Login
-          onLogin={handleLogin}
+          socket={socket}
           darkMode={darkMode}
           onDarkModeToggle={handleDarkModeToggle}
+          onLogin={handleLogin}
         />
       )}
       {screen === "home" && (
@@ -277,7 +280,7 @@ function App() {
               : sessions.length > 0
               ? sessions[sessions.length - 1].id
               : null
-          } // Pass session ID
+          }
           isAdmin={isAdmin}
           socket={socket}
           darkMode={darkMode}
