@@ -5,6 +5,7 @@ const socketIo = require("socket.io");
 const fs = require("fs");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
+const sqlite3 = require("sqlite3").verbose();
 
 const app = express();
 const server = http.createServer(app);
@@ -19,12 +20,33 @@ const io = socketIo(server, {
 
 app.use(express.static("public"));
 
+// Initialize SQLite database
+const db = new sqlite3.Database("./sessions.db", (err) => {
+  if (err) {
+    console.error("Error opening database:", err.message);
+  } else {
+    console.log("Connected to SQLite database.");
+    db.run(
+      `CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      sessionName TEXT,
+      sprint TEXT,
+      sprintGoal TEXT,
+      date TEXT,
+      results TEXT
+    )`,
+      (err) => {
+        if (err) console.error("Error creating table:", err.message);
+      }
+    );
+  }
+});
+
 let users = [];
 let stories = [];
 let votes = {};
 let adminId = null;
 let timer = null;
-let sessions = [];
 let pendingSessions = [];
 let currentSessionId = null;
 
@@ -53,6 +75,26 @@ function extractTextFromADF(content) {
   return text.trim();
 }
 
+// Helper function to get all sessions from DB
+function getSessions(callback) {
+  db.all("SELECT * FROM sessions", (err, rows) => {
+    if (err) {
+      console.error("Error fetching sessions:", err.message);
+      callback([]);
+    } else {
+      const sessions = rows.map((row) => ({
+        id: row.id,
+        sessionName: row.sessionName,
+        sprint: row.sprint,
+        sprintGoal: row.sprintGoal,
+        date: row.date,
+        results: JSON.parse(row.results || "[]"),
+      }));
+      callback(sessions);
+    }
+  });
+}
+
 io.on("connection", (socket) => {
   console.log(`New connection: ${socket.id}`);
   socket.on("login", (name) => {
@@ -79,16 +121,33 @@ io.on("connection", (socket) => {
     console.log("Current users:", users);
     io.emit("updateUsers", users);
 
-    console.log("Sending syncSessions to new user:", sessions);
-    socket.emit("syncSessions", sessions);
-    socket.emit("syncPendingSessions", pendingSessions);
-    if (currentSessionId) {
-      const currentSession = sessions.find((s) => s.id === currentSessionId);
-      if (currentSession) {
-        console.log("Sending startSession to new user:", currentSession);
-        socket.emit("startSession", currentSession);
+    getSessions((sessions) => {
+      console.log("Sending syncSessions to new user:", sessions);
+      socket.emit("syncSessions", sessions);
+      socket.emit("syncPendingSessions", pendingSessions);
+      if (currentSessionId) {
+        db.get(
+          "SELECT * FROM sessions WHERE id = ?",
+          [currentSessionId],
+          (err, row) => {
+            if (err) {
+              console.error("Error fetching current session:", err.message);
+            } else if (row) {
+              const currentSession = {
+                id: row.id,
+                sessionName: row.sessionName,
+                sprint: row.sprint,
+                sprintGoal: row.sprintGoal,
+                date: row.date,
+                results: JSON.parse(row.results || "[]"),
+              };
+              console.log("Sending startSession to new user:", currentSession);
+              socket.emit("startSession", currentSession);
+            }
+          }
+        );
       }
-    }
+    });
   });
 
   socket.on("vote", (voteData) => {
@@ -176,11 +235,27 @@ io.on("connection", (socket) => {
           pending: false,
         };
         delete approvedSession.proposedBy;
-        sessions.push(approvedSession);
-        pendingSessions.splice(sessionIndex, 1);
-        console.log("Approved session:", approvedSession);
-        io.emit("syncSessions", sessions);
-        io.emit("syncPendingSessions", pendingSessions);
+        db.run(
+          "INSERT INTO sessions (id, sessionName, sprint, sprintGoal, date, results) VALUES (?, ?, ?, ?, ?, ?)",
+          [
+            approvedSession.id,
+            approvedSession.sessionName,
+            approvedSession.sprint,
+            approvedSession.sprintGoal,
+            approvedSession.date,
+            JSON.stringify([]),
+          ],
+          (err) => {
+            if (err)
+              console.error("Error inserting approved session:", err.message);
+            else {
+              console.log("Approved session:", approvedSession);
+              getSessions((sessions) => io.emit("syncSessions", sessions));
+              pendingSessions.splice(sessionIndex, 1);
+              io.emit("syncPendingSessions", pendingSessions);
+            }
+          }
+        );
       }
     }
   });
@@ -189,78 +264,152 @@ io.on("connection", (socket) => {
     if (socket.id === adminId) {
       const sessionId = uuidv4();
       const newSession = { ...sessionData, id: sessionId, results: [] };
-      sessions.push(newSession);
-      console.log("Saved session:", newSession);
-      io.emit("syncSessions", sessions);
+      db.run(
+        "INSERT INTO sessions (id, sessionName, sprint, sprintGoal, date, results) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+          sessionId,
+          newSession.sessionName,
+          newSession.sprint,
+          newSession.sprintGoal,
+          newSession.date,
+          JSON.stringify(newSession.results),
+        ],
+        (err) => {
+          if (err) console.error("Error saving session:", err.message);
+          else {
+            console.log("Saved session:", newSession);
+            getSessions((sessions) => io.emit("syncSessions", sessions));
+          }
+        }
+      );
     }
   });
 
   socket.on("updateSession", (sessionData) => {
     if (socket.id === adminId) {
-      const sessionIndex = sessions.findIndex((s) => s.id === sessionData.id);
-      if (sessionIndex !== -1) {
-        sessions[sessionIndex] = { ...sessions[sessionIndex], ...sessionData };
-        console.log("Updated session:", sessions[sessionIndex]);
-        io.emit("syncSessions", sessions);
-      }
+      db.run(
+        "UPDATE sessions SET sessionName = ?, sprint = ?, sprintGoal = ?, date = ? WHERE id = ?",
+        [
+          sessionData.sessionName,
+          sessionData.sprint,
+          sessionData.sprintGoal,
+          sessionData.date,
+          sessionData.id,
+        ],
+        (err) => {
+          if (err) console.error("Error updating session:", err.message);
+          else {
+            console.log("Updated session:", sessionData);
+            getSessions((sessions) => io.emit("syncSessions", sessions));
+          }
+        }
+      );
     }
   });
 
   socket.on("startSession", (sessionData) => {
     if (socket.id === adminId) {
       const sessionId = sessionData.id || uuidv4();
-      const existingIndex = sessions.findIndex((s) => s.id === sessionId);
-      const newSession =
-        existingIndex !== -1
-          ? sessions[existingIndex]
+      db.get("SELECT * FROM sessions WHERE id = ?", [sessionId], (err, row) => {
+        if (err) {
+          console.error("Error checking session:", err.message);
+          return;
+        }
+        const newSession = row
+          ? {
+              id: row.id,
+              sessionName: row.sessionName,
+              sprint: row.sprint,
+              sprintGoal: row.sprintGoal,
+              date: row.date,
+              results: JSON.parse(row.results || "[]"),
+            }
           : { ...sessionData, id: sessionId, results: [] };
-      if (existingIndex === -1) sessions.push(newSession);
-      currentSessionId = sessionId;
-      console.log("Starting session:", newSession);
-      io.emit("startSession", newSession);
-      console.log("Broadcasting syncSessions:", sessions);
-      io.emit("syncSessions", sessions);
-      stories = [];
-      votes = {};
-      users.forEach((u) => (u.voted = false));
-      io.emit("updateUsers", users);
+
+        if (!row) {
+          db.run(
+            "INSERT INTO sessions (id, sessionName, sprint, sprintGoal, date, results) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+              sessionId,
+              newSession.sessionName,
+              newSession.sprint,
+              newSession.sprintGoal,
+              newSession.date,
+              JSON.stringify(newSession.results),
+            ],
+            (err) => {
+              if (err)
+                console.error("Error inserting new session:", err.message);
+            }
+          );
+        }
+
+        currentSessionId = sessionId;
+        console.log("Starting session:", newSession);
+        io.emit("startSession", newSession);
+        getSessions((sessions) => {
+          console.log("Broadcasting syncSessions:", sessions);
+          io.emit("syncSessions", sessions);
+        });
+        stories = [];
+        votes = {};
+        users.forEach((u) => (u.voted = false));
+        io.emit("updateUsers", users);
+      });
     }
   });
 
   socket.on("restartSession", (sessionId) => {
     if (socket.id === adminId) {
-      const sessionIndex = sessions.findIndex((s) => s.id === sessionId);
-      if (sessionIndex !== -1) {
-        sessions[sessionIndex].results = [];
-        currentSessionId = sessionId;
-        stories = [];
-        votes = {};
-        users.forEach((u) => (u.voted = false));
-        console.log("Restarting session:", sessions[sessionIndex]);
-        io.emit("startSession", sessions[sessionIndex]);
-        io.emit("updateUsers", users);
-        io.emit("resetVoting");
-        io.emit("hideVotes");
-      } else {
-        console.log("Session not found for restart:", sessionId);
-      }
+      db.get("SELECT * FROM sessions WHERE id = ?", [sessionId], (err, row) => {
+        if (err || !row) {
+          console.log("Session not found for restart:", sessionId);
+          return;
+        }
+        db.run(
+          "UPDATE sessions SET results = ? WHERE id = ?",
+          [JSON.stringify([]), sessionId],
+          (err) => {
+            if (err)
+              console.error("Error resetting session results:", err.message);
+            const session = {
+              id: row.id,
+              sessionName: row.sessionName,
+              sprint: row.sprint,
+              sprintGoal: row.sprintGoal,
+              date: row.date,
+              results: [],
+            };
+            currentSessionId = sessionId;
+            stories = [];
+            votes = {};
+            users.forEach((u) => (u.voted = false));
+            console.log("Restarting session:", session);
+            io.emit("startSession", session);
+            io.emit("updateUsers", users);
+            io.emit("resetVoting");
+            io.emit("hideVotes");
+          }
+        );
+      });
     }
   });
 
   socket.on("deleteSession", (sessionId) => {
     if (socket.id === adminId) {
-      const sessionIndex = sessions.findIndex((s) => s.id === sessionId);
-      if (sessionIndex !== -1) {
-        if (sessions[sessionIndex].id === currentSessionId) {
-          currentSessionId = null;
-          stories = [];
-          votes = {};
-          io.emit("updateUsers", users);
+      db.run("DELETE FROM sessions WHERE id = ?", [sessionId], (err) => {
+        if (err) console.error("Error deleting session:", err.message);
+        else {
+          if (sessionId === currentSessionId) {
+            currentSessionId = null;
+            stories = [];
+            votes = {};
+            io.emit("updateUsers", users);
+          }
+          console.log("Deleted session:", sessionId);
+          getSessions((sessions) => io.emit("syncSessions", sessions));
         }
-        sessions.splice(sessionIndex, 1);
-        console.log("Deleted session:", sessionId);
-        io.emit("syncSessions", sessions);
-      }
+      });
     }
   });
 
@@ -268,7 +417,7 @@ io.on("connection", (socket) => {
     if (socket.id === adminId) {
       clearInterval(timer);
       let timeLeft = seconds;
-      io.emit("startTimerSync", seconds); // Sync all clients with initial value
+      io.emit("startTimerSync", seconds);
       io.emit("timerUpdate", timeLeft);
       timer = setInterval(() => {
         timeLeft--;
@@ -296,14 +445,31 @@ io.on("connection", (socket) => {
       clearInterval(timer);
       io.emit("timerUpdate", 0);
       if (Object.keys(votes).length > 0) saveResults();
-      const currentSession = sessions.find((s) => s.id === currentSessionId);
-      console.log("Sending sessionSummary:", currentSession.results);
-      io.emit("sessionSummary", currentSession.results);
-      sendToSlack(currentSession.results, currentSession);
-      currentSessionId = null;
-      stories = [];
-      votes = {};
-      io.emit("syncSessions", sessions);
+      db.get(
+        "SELECT * FROM sessions WHERE id = ?",
+        [currentSessionId],
+        (err, row) => {
+          if (err || !row) {
+            console.error("Error fetching session for summary:", err?.message);
+            return;
+          }
+          const currentSession = {
+            id: row.id,
+            sessionName: row.sessionName,
+            sprint: row.sprint,
+            sprintGoal: row.sprintGoal,
+            date: row.date,
+            results: JSON.parse(row.results || "[]"),
+          };
+          console.log("Sending sessionSummary:", currentSession.results);
+          io.emit("sessionSummary", currentSession.results);
+          sendToSlack(currentSession.results, currentSession);
+          currentSessionId = null;
+          stories = [];
+          votes = {};
+          getSessions((sessions) => io.emit("syncSessions", sessions));
+        }
+      );
     }
   });
 
@@ -314,6 +480,10 @@ io.on("connection", (socket) => {
       setTimeout(() => {
         io.disconnectSockets();
         server.close();
+        db.close((err) => {
+          if (err) console.error("Error closing database:", err.message);
+          else console.log("Database closed.");
+        });
       }, 2000);
     }
   });
@@ -381,12 +551,30 @@ function saveResults() {
     })),
   };
   if (currentSessionId) {
-    const sessionIndex = sessions.findIndex((s) => s.id === currentSessionId);
-    if (sessionIndex !== -1) {
-      sessions[sessionIndex].results.push(result);
-      console.log("Saved results for session:", sessions[sessionIndex]);
-      io.emit("syncSessions", sessions);
-    }
+    db.get(
+      "SELECT results FROM sessions WHERE id = ?",
+      [currentSessionId],
+      (err, row) => {
+        if (err) {
+          console.error("Error fetching session results:", err.message);
+          return;
+        }
+        const results = row ? JSON.parse(row.results || "[]") : [];
+        results.push(result);
+        db.run(
+          "UPDATE sessions SET results = ? WHERE id = ?",
+          [JSON.stringify(results), currentSessionId],
+          (err) => {
+            if (err)
+              console.error("Error saving results to session:", err.message);
+            else {
+              console.log("Saved results for session:", currentSessionId);
+              getSessions((sessions) => io.emit("syncSessions", sessions));
+            }
+          }
+        );
+      }
+    );
   }
 
   fs.readFile("results.json", (err, data) => {
