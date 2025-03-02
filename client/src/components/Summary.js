@@ -11,6 +11,7 @@ function Summary({
   socket,
   darkMode,
   onDarkModeToggle,
+  displayFullName,
   onLogout,
   onReturnToLobby,
 }) {
@@ -24,7 +25,6 @@ function Summary({
   const aggregatedSummary = {};
   summary.forEach((s) => {
     const key = `${s.story.summary} - ${s.story.description}`;
-    // Overwrite with the latest result for each story
     aggregatedSummary[key] = {
       votes: {},
       finalEstimate: s.story.finalEstimate,
@@ -35,7 +35,12 @@ function Summary({
   const cards = Object.keys(aggregatedSummary).map((storyKey) => {
     const [summaryText, description] = storyKey.split(" - ");
     const votesList = Object.keys(aggregatedSummary[storyKey].votes)
-      .map((user) => `${user}: ${aggregatedSummary[storyKey].votes[user]}`)
+      .map(
+        (user) =>
+          `${displayFullName ? user : user.split(" ")[0]}: ${
+            aggregatedSummary[storyKey].votes[user]
+          }`
+      )
       .join(", ");
     const finalEstimate = aggregatedSummary[storyKey].finalEstimate;
 
@@ -43,7 +48,6 @@ function Summary({
   });
 
   const handleRestartSession = () => {
-    console.log("Restarting session from summary with ID:", sessionId);
     socket.emit("restartSession", sessionId);
   };
 

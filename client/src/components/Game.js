@@ -22,17 +22,19 @@ import Brightness4Icon from "@mui/icons-material/Brightness4";
 
 function Game({
   myName,
+  myRole,
   isAdmin,
   adminId,
-  users: propUsers,
-  story: propStory,
-  myVote: propMyVote,
-  votes: propVotes,
-  timer: propTimer,
-  showVotes: propShowVotes,
+  users,
+  story,
+  myVote,
+  votes,
+  timer,
+  showVotes,
   socket,
   darkMode,
   onDarkModeToggle,
+  displayFullName,
   sessionName,
 }) {
   const [summaryInput, setSummaryInput] = useState("");
@@ -40,17 +42,17 @@ function Game({
   const [finalEstimate, setFinalEstimate] = useState("");
   const [jiraUrl, setJiraUrl] = useState("");
   const [submitDisabled, setSubmitDisabled] = useState(false);
-  const [timerDisabled, setTimerDisabled] = useState(true); // Start disabled
+  const [timerDisabled, setTimerDisabled] = useState(true);
   const [endVotingDisabled, setEndVotingDisabled] = useState(true);
   const [estimateDisabled, setEstimateDisabled] = useState(true);
   const [finalEstimateSubmitted, setFinalEstimateSubmitted] = useState(false);
-  const [localStory, setLocalStory] = useState(propStory);
-  const [localTimer, setLocalTimer] = useState(propTimer);
+  const [localStory, setLocalStory] = useState(story);
+  const [localTimer, setLocalTimer] = useState(timer);
   const [timerColor, setTimerColor] = useState("inherit");
-  const [localShowVotes, setLocalShowVotes] = useState(propShowVotes);
-  const [localVotes, setLocalVotes] = useState(propVotes);
-  const [localUsers, setLocalUsers] = useState(propUsers);
-  const [localMyVote, setLocalMyVote] = useState(propMyVote);
+  const [localShowVotes, setLocalShowVotes] = useState(showVotes);
+  const [localVotes, setLocalVotes] = useState(votes);
+  const [localUsers, setLocalUsers] = useState(users);
+  const [localMyVote, setLocalMyVote] = useState(myVote);
   const [cardsEnabled, setCardsEnabled] = useState(false);
   const [jiraModalOpen, setJiraModalOpen] = useState(false);
   const [jiraImportUrl, setJiraImportUrl] = useState("");
@@ -65,7 +67,7 @@ function Game({
       `${myName}: Game component mounted. isAdmin:`,
       isAdmin,
       "users:",
-      propUsers,
+      localUsers,
       "socket connected:",
       socket.connected
     );
@@ -73,11 +75,8 @@ function Game({
     socket.on("updateStory", (newStory) => {
       console.log(`${myName}: Received updateStory:`, newStory);
       setLocalStory(newStory);
+      setTimerDisabled(myRole !== "Admin");
       const hasFinalEstimate = !!newStory.finalEstimate;
-      // Only enable timer if this is a new story without a final estimate
-      if (!hasFinalEstimate) {
-        setTimerDisabled(false);
-      }
       setEndVotingDisabled(hasFinalEstimate);
       setEstimateDisabled(!hasFinalEstimate);
       setFinalEstimate("");
@@ -102,11 +101,6 @@ function Game({
       setLocalUsers(usersData);
     });
 
-    socket.on("startTimerSync", (seconds) => {
-      console.log(`${myName}: Received startTimerSync:`, seconds);
-      setMaxTimerValue(seconds);
-    });
-
     socket.on("timerUpdate", (timeLeft) => {
       console.log(
         `${myName}: Timer update:`,
@@ -122,6 +116,7 @@ function Game({
         const timeStr = `${minutes}:${secs < 10 ? "0" + secs : secs}`;
         setLocalTimer(timeStr);
         setTimerValue(timeLeft);
+        if (maxTimerValue === null && timeLeft > 0) setMaxTimerValue(timeLeft);
         setTimerColor(timeLeft <= 10 ? "red" : "inherit");
         setPulseAnimation(false);
       } else {
@@ -146,6 +141,7 @@ function Game({
       setLocalVotes(votesData);
       setLocalUsers(usersData);
       setSubmitDisabled(false);
+      setTimerDisabled(true);
       setEndVotingDisabled(true);
       setEstimateDisabled(false);
       setCardsEnabled(false);
@@ -186,7 +182,6 @@ function Game({
       setCardsEnabled(false);
       setEstimateDisabled(true);
       setEndVotingDisabled(true);
-      setTimerDisabled(true); // Ensure disabled after final estimate
     });
 
     socket.on("resetVoting", () => {
@@ -200,7 +195,6 @@ function Game({
     return () => {
       socket.off("updateStory");
       socket.off("updateVotes");
-      socket.off("startTimerSync");
       socket.off("timerUpdate");
       socket.off("showVotes");
       socket.off("hideVotes");
@@ -210,7 +204,7 @@ function Game({
       socket.off("finalEstimateSubmitted");
       socket.off("resetVoting");
     };
-  }, [socket, isAdmin, propUsers, myName]);
+  }, [socket, isAdmin, myName, myRole]);
 
   const handleVote = (number) => {
     if (!cardsEnabled) return;
@@ -249,7 +243,7 @@ function Game({
       setEndVotingDisabled(true);
       setFinalEstimateSubmitted(true);
       setCardsEnabled(false);
-      setTimerDisabled(true); // Lock disabled after final estimate
+      setTimerDisabled(true);
       setJiraUrl("");
     }
   };
@@ -268,7 +262,7 @@ function Game({
       socket.emit("endVoting");
       setEndVotingDisabled(true);
       setSubmitDisabled(false);
-      setTimerDisabled(true); // Keep disabled after manual end
+      setTimerDisabled(true);
       setEstimateDisabled(false);
     }
   };
@@ -323,7 +317,7 @@ function Game({
                 }}
               >
                 <ListItemText
-                  primary={u.name}
+                  primary={displayFullName ? u.name : u.name.split(" ")[0]}
                   sx={{
                     color: u.voted ? "green" : "inherit",
                     flex: "none",

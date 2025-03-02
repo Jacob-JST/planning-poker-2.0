@@ -1,3 +1,4 @@
+// /react-planning-poker-2.0/client/src/components/Home.js
 import React, { useState } from "react";
 import {
   Box,
@@ -11,6 +12,10 @@ import {
   Modal,
   TextField,
   Button,
+  Select,
+  MenuItem,
+  FormControlLabel,
+  Switch,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import Brightness7Icon from "@mui/icons-material/Brightness7";
@@ -23,9 +28,12 @@ import CheckIcon from "@mui/icons-material/Check";
 
 function Home({
   myName,
+  myRole,
   socket,
   darkMode,
   onDarkModeToggle,
+  onNameDisplayToggle,
+  displayFullName,
   onLogout,
   sessions,
   pendingSessions,
@@ -35,14 +43,20 @@ function Home({
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState(null);
   const [selectedSessionIndex, setSelectedSessionIndex] = useState(null);
   const [sessionName, setSessionName] = useState("");
   const [sprint, setSprint] = useState("");
   const [sprintGoal, setSprintGoal] = useState("");
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [selectedRole, setSelectedRole] = useState("User");
 
   console.log("Home.js: Received users prop:", users);
+  console.log(
+    `Home.js: myName=${myName}, myRole=${myRole}, isAdmin=${isAdmin}`
+  );
 
   const handleOpenModal = (index = null) => {
     if (index !== null) {
@@ -135,6 +149,20 @@ function Home({
     }
   };
 
+  const handleSettingsOpen = () => setSettingsOpen(true);
+  const handleSettingsClose = () => setSettingsOpen(false);
+
+  const handleRoleChange = () => {
+    if (selectedUserId && selectedRole) {
+      socket.emit("setUserRole", {
+        userId: selectedUserId,
+        role: selectedRole,
+      });
+      setSelectedUserId("");
+      setSelectedRole("User");
+    }
+  };
+
   return (
     <Box sx={{ display: "flex", height: "100vh", position: "relative" }}>
       <IconButton
@@ -154,7 +182,7 @@ function Home({
         <List>
           <ListItem>
             <ListItemText
-              primary={myName}
+              primary={displayFullName ? myName : myName.split(" ")[0]}
               primaryTypographyProps={{ variant: "h6" }}
             />
           </ListItem>
@@ -166,8 +194,16 @@ function Home({
           {users.map((user) => (
             <ListItem key={user.id}>
               <ListItemText
-                primary={`${user.name} is here`}
-                secondaryTypographyProps={{ color: "textPrimary" }}
+                primary={
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontWeight: user.role === "Admin" ? "bold" : "normal",
+                    }}
+                  >
+                    {displayFullName ? user.name : user.name.split(" ")[0]}
+                  </Typography>
+                }
               />
             </ListItem>
           ))}
@@ -175,9 +211,14 @@ function Home({
         <Box sx={{ flexGrow: 1 }} />
         <List sx={{ position: "absolute", bottom: 0, width: "100%" }}>
           <ListItem>
-            <IconButton disabled>
-              <Settings />
-            </IconButton>
+            <Button
+              variant="outlined"
+              startIcon={<Settings />}
+              onClick={handleSettingsOpen}
+              sx={{ width: "100%", justifyContent: "flex-start" }}
+            >
+              Settings
+            </Button>
           </ListItem>
           <ListItem>
             <IconButton onClick={onLogout}>
@@ -320,7 +361,10 @@ function Home({
                         {session.sprintGoal}
                       </Typography>
                       <Typography variant="body2">
-                        Proposed by: {session.proposedBy}
+                        Proposed by:{" "}
+                        {displayFullName
+                          ? session.proposedBy
+                          : session.proposedBy.split(" ")[0]}
                       </Typography>
                     </Box>
                     <Box
@@ -473,6 +517,93 @@ function Home({
               Cancel
             </Button>
           </Box>
+        </Box>
+      </Modal>
+      <Modal
+        open={settingsOpen}
+        onClose={handleSettingsClose}
+        sx={{ display: "flex", alignItems: "center", justifyContent: "center" }}
+      >
+        <Box
+          sx={{
+            bgcolor: "background.paper",
+            p: 4,
+            borderRadius: 2,
+            width: 400,
+          }}
+        >
+          <Typography variant="h6" gutterBottom>
+            Settings
+          </Typography>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={displayFullName}
+                onChange={onNameDisplayToggle}
+              />
+            }
+            label="Display Full Name"
+            sx={{ mb: 2 }}
+          />
+          {(myRole === "Admin" || isAdmin) && (
+            <>
+              <Typography variant="subtitle1" sx={{ mt: 2 }}>
+                Role-Based Access Control (RBAC)
+              </Typography>
+              <Select
+                value={selectedUserId}
+                onChange={(e) => setSelectedUserId(e.target.value)}
+                fullWidth
+                displayEmpty
+                sx={{ mb: 2 }}
+              >
+                <MenuItem value="">
+                  <em>Select User</em>
+                </MenuItem>
+                {users
+                  .filter((u) => u.name !== myName)
+                  .map((u) => (
+                    <MenuItem key={u.id} value={u.id}>
+                      {displayFullName ? u.name : u.name.split(" ")[0]} (
+                      {u.role})
+                    </MenuItem>
+                  ))}
+              </Select>
+              <Select
+                value={selectedRole}
+                onChange={(e) => setSelectedRole(e.target.value)}
+                fullWidth
+                sx={{ mb: 2 }}
+              >
+                <MenuItem value="User">User</MenuItem>
+                <MenuItem value="Admin">Admin</MenuItem>
+              </Select>
+              <Box
+                sx={{ display: "flex", justifyContent: "space-between", mb: 2 }}
+              >
+                <Button
+                  variant="contained"
+                  onClick={handleRoleChange}
+                  disabled={!selectedUserId}
+                  sx={{ mr: 1 }}
+                >
+                  Set Role
+                </Button>
+                <Button variant="contained" onClick={handleSettingsClose}>
+                  Close
+                </Button>
+              </Box>
+            </>
+          )}
+          {!myRole === "Admin" && !isAdmin && (
+            <Button
+              variant="contained"
+              onClick={handleSettingsClose}
+              sx={{ mt: 2 }}
+            >
+              Close
+            </Button>
+          )}
         </Box>
       </Modal>
     </Box>

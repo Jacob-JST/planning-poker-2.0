@@ -1,3 +1,4 @@
+// /react-planning-poker-2.0/client/src/App.js
 import React, { useState, useEffect } from "react";
 import { io } from "socket.io-client";
 import { ThemeProvider, CssBaseline, createTheme } from "@mui/material";
@@ -11,6 +12,7 @@ function App() {
   const [socket, setSocket] = useState(null);
   const [screen, setScreen] = useState("login");
   const [myName, setMyName] = useState("");
+  const [myRole, setMyRole] = useState("User");
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminId, setAdminId] = useState(null);
   const [users, setUsers] = useState([]);
@@ -24,10 +26,14 @@ function App() {
   const [selectedSessionSummary, setSelectedSessionSummary] = useState(null);
   const [showVotes, setShowVotes] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [displayFullName, setDisplayFullName] = useState(true);
 
   useEffect(() => {
     const savedMode = localStorage.getItem("darkMode") === "true";
+    const savedNameDisplay =
+      localStorage.getItem("displayFullName") !== "false";
     setDarkMode(savedMode);
+    setDisplayFullName(savedNameDisplay);
     const newSocket = io("http://localhost:3001", { reconnection: false });
     setSocket(newSocket);
     return () => newSocket.disconnect();
@@ -36,47 +42,46 @@ function App() {
   useEffect(() => {
     if (!socket) return;
 
-    console.log("App mounted or socket changed");
-
     socket.on("connect", () => {
       console.log("Connected to server");
-      if (myName) {
-        console.log("Re-emitting login:", myName);
-        socket.emit("login", myName);
-      }
+      if (myName) socket.emit("login", myName);
     });
 
     socket.on("updateUsers", (usersData) => {
       console.log("Received updateUsers:", usersData);
       setUsers(usersData);
+      const me = usersData.find((u) => u.name === myName);
+      if (me) {
+        console.log(`Setting myRole for ${myName} to ${me.role}`);
+        setMyRole(me.role);
+      } else {
+        console.log(`User ${myName} not found in usersData`);
+      }
     });
 
     socket.on("setAdmin", (adminStatus, receivedAdminId) => {
-      console.log(`Set admin: ${adminStatus}, Admin ID: ${receivedAdminId}`);
+      console.log(
+        `setAdmin: isAdmin=${adminStatus}, adminId=${receivedAdminId}`
+      );
       setIsAdmin(adminStatus);
       setAdminId(receivedAdminId);
       if (screen === "login" && myName) setScreen("home");
     });
 
     socket.on("loginError", (message) => {
-      console.error("Login error:", message);
       alert(message);
       setMyName("");
     });
 
     socket.on("syncSessions", (allSessions) => {
-      console.log("Received syncSessions:", allSessions);
       setSessions(allSessions);
     });
 
     socket.on("syncPendingSessions", (pending) => {
-      console.log("Received syncPendingSessions:", pending);
       setPendingSessions(pending);
-      console.log("Updated pendingSessions state to:", pending);
     });
 
     socket.on("startSession", (sessionData) => {
-      console.log("Received startSession:", sessionData);
       setCurrentSession(sessionData);
       setStory("");
       setMyVote(null);
@@ -121,7 +126,6 @@ function App() {
           );
           if (existingIndex !== -1) {
             newSessions[existingIndex].results = summary;
-            console.log("Updated session summary:", newSessions[existingIndex]);
             setSelectedSessionSummary(newSessions[existingIndex]);
           }
           return newSessions;
@@ -131,13 +135,11 @@ function App() {
     });
 
     socket.on("serverClosed", () => {
-      console.log("Server closed, switching to farewell");
       setScreen("farewell");
       socket.disconnect();
     });
 
     socket.on("connect_error", (error) => {
-      console.error("Connection error:", error.message);
       alert(
         `Failed to connect to the server: ${error.message}. Please ensure the server is running on http://localhost:3001.`
       );
@@ -160,10 +162,9 @@ function App() {
       socket.off("serverClosed");
       socket.off("connect_error");
     };
-  }, [socket, screen, myName, currentSession]);
+  }, [socket, screen, myName]);
 
   const handleLogin = (name, isAdmin, adminId) => {
-    console.log("Logging in:", name);
     setMyName(name);
     setIsAdmin(isAdmin);
     setAdminId(adminId);
@@ -178,8 +179,15 @@ function App() {
     });
   };
 
+  const handleNameDisplayToggle = () => {
+    setDisplayFullName((prev) => {
+      const newValue = !prev;
+      localStorage.setItem("displayFullName", newValue);
+      return newValue;
+    });
+  };
+
   const handleLogout = () => {
-    console.log("Logging out:", myName);
     if (socket) socket.disconnect();
     setMyName("");
     setIsAdmin(false);
@@ -198,7 +206,6 @@ function App() {
   };
 
   const handleViewSummary = (sessionData) => {
-    console.log("Viewing summary for session:", sessionData);
     setSelectedSessionSummary(sessionData);
     setScreen("summary");
   };
@@ -230,9 +237,12 @@ function App() {
       {screen === "home" && (
         <Home
           myName={myName}
+          myRole={myRole}
           socket={socket}
           darkMode={darkMode}
           onDarkModeToggle={handleDarkModeToggle}
+          onNameDisplayToggle={handleNameDisplayToggle}
+          displayFullName={displayFullName}
           onLogout={handleLogout}
           sessions={sessions}
           pendingSessions={pendingSessions}
@@ -244,6 +254,7 @@ function App() {
       {screen === "game" && users.length > 0 && (
         <Game
           myName={myName}
+          myRole={myRole}
           isAdmin={isAdmin}
           adminId={adminId}
           users={users}
@@ -255,6 +266,7 @@ function App() {
           socket={socket}
           darkMode={darkMode}
           onDarkModeToggle={handleDarkModeToggle}
+          displayFullName={displayFullName}
           sessionName={currentSession?.sessionName}
         />
       )}
@@ -285,6 +297,7 @@ function App() {
           socket={socket}
           darkMode={darkMode}
           onDarkModeToggle={handleDarkModeToggle}
+          displayFullName={displayFullName}
           onLogout={handleLogout}
           onReturnToLobby={handleReturnToLobby}
         />

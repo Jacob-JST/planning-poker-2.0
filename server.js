@@ -1,3 +1,4 @@
+// /react-planning-poker-2.0/server.js
 require("dotenv").config();
 const express = require("express");
 const http = require("http");
@@ -24,21 +25,15 @@ const db = new sqlite3.Database("./sessions.db", (err) => {
     console.error("Error opening database:", err.message);
   } else {
     console.log("Connected to SQLite database.");
-    db.run(
-      `CREATE TABLE IF NOT EXISTS sessions (
+    db.run(`CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       sessionName TEXT,
       sprint TEXT,
       sprintGoal TEXT,
       date TEXT,
       results TEXT
-    )`,
-      (err) => {
-        if (err) console.error("Error creating sessions table:", err.message);
-      }
-    );
-    db.run(
-      `CREATE TABLE IF NOT EXISTS results (
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS results (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       sessionId TEXT,
       timestamp TEXT,
@@ -47,9 +42,20 @@ const db = new sqlite3.Database("./sessions.db", (err) => {
       finalEstimate TEXT,
       votes TEXT,
       FOREIGN KEY (sessionId) REFERENCES sessions(id)
+    )`);
+    db.run(
+      `CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE,
+      role TEXT DEFAULT 'User'
     )`,
       (err) => {
-        if (err) console.error("Error creating results table:", err.message);
+        if (err) console.error("Error creating users table:", err.message);
+        // Seed admin if not exists
+        db.run(
+          "INSERT OR IGNORE INTO users (id, name, role) VALUES (?, ?, ?)",
+          [uuidv4(), "admin", "Admin"]
+        );
       }
     );
   }
@@ -138,71 +144,130 @@ function getSessionResults(sessionId, callback) {
   );
 }
 
+function getUsers(callback) {
+  db.all("SELECT * FROM users", (err, rows) => {
+    if (err) {
+      console.error("Error fetching users:", err.message);
+      callback([]);
+    } else {
+      callback(rows);
+    }
+  });
+}
+
 io.on("connection", (socket) => {
   console.log(`New connection: ${socket.id}`);
   socket.on("login", (name) => {
     console.log(`User login attempt: ${name}, Socket ID: ${socket.id}`);
-    const existingUser = users.find((u) => u.name === name);
-    if (existingUser) {
-      socket.emit(
-        "loginError",
-        "User with this name already exists. Please choose a different name."
-      );
-      return;
-    }
-
-    const isAdmin = name.toLowerCase() === "admin";
-    if (isAdmin) {
-      adminId = socket.id;
-      console.log(`Set admin: ${socket.id} for user "admin"`);
-      socket.emit("setAdmin", true, adminId);
-    } else {
-      socket.emit("setAdmin", false, adminId);
-    }
-
-    users.push({ id: socket.id, name, voted: false });
-    console.log("Current users:", users);
-    io.emit("updateUsers", users);
-
-    getSessions((sessions) => {
-      console.log("Sending syncSessions to new user:", sessions);
-      socket.emit("syncSessions", sessions);
-      socket.emit("syncPendingSessions", pendingSessions);
-      if (currentSessionId) {
-        db.get(
-          "SELECT * FROM sessions WHERE id = ?",
-          [currentSessionId],
-          (err, row) => {
+    db.get("SELECT * FROM users WHERE name = ?", [name], (err, row) => {
+      if (err) {
+        console.error("Error checking user:", err.message);
+        socket.emit("loginError", "Database error");
+        return;
+      }
+      if (row) {
+        if (users.find((u) => u.name === name)) {
+          socket.emit("loginError", "User with this name already exists.");
+          return;
+        }
+        users.push({ id: socket.id, name, voted: false, role: row.role });
+        const isAdmin = row.role === "Admin";
+        if (isAdmin) adminId = socket.id;
+        socket.emit("setAdmin", isAdmin, adminId);
+      } else {
+        const userId = uuidv4();
+        db.run(
+          "INSERT INTO users (id, name, role) VALUES (?, ?, ?)",
+          [userId, name, "User"],
+          (err) => {
             if (err) {
-              console.error("Error fetching current session:", err.message);
-            } else if (row) {
-              getSessionResults(currentSessionId, (results) => {
-                const currentSession = {
-                  id: row.id,
-                  sessionName: row.sessionName,
-                  sprint: row.sprint,
-                  sprintGoal: row.sprintGoal,
-                  date: row.date,
-                  results: results,
-                };
-                console.log(
-                  "Sending startSession to new user:",
-                  currentSession
-                );
-                socket.emit("startSession", currentSession);
-              });
+              console.error("Error inserting user:", err.message);
+              socket.emit("loginError", "Database error");
+              return;
             }
+            users.push({ id: socket.id, name, voted: false, role: "User" });
+            socket.emit("setAdmin", false, adminId);
           }
         );
       }
+      io.emit(
+        "updateUsers",
+        users.map((u) => ({
+          id: u.id,
+          name: u.name,
+          voted: u.voted,
+          role: u.role,
+        }))
+      );
+      getSessions((sessions) => {
+        socket.emit("syncSessions", sessions);
+        socket.emit("syncPendingSessions", pendingSessions);
+        if (currentSessionId) {
+          db.get(
+            "SELECT * FROM sessions WHERE id = ?",
+            [currentSessionId],
+            (err, row) => {
+              if (row) {
+                getSessionResults(currentSessionId, (results) => {
+                  socket.emit("startSession", { ...row, results });
+                });
+              }
+            }
+          );
+        }
+      });
     });
+  });
+
+  socket.on("setUserRole", ({ userId, role }) => {
+    if (socket.id === adminId) {
+      db.run(
+        "UPDATE users SET role = ? WHERE id = ?",
+        [role, userId],
+        (err) => {
+          if (err) {
+            console.error("Error updating user role:", err.message);
+          } else {
+            console.log(`Set role for user ${userId} to ${role}`);
+            const userIndex = users.findIndex((u) => u.id === userId);
+            if (userIndex !== -1) {
+              users[userIndex].role = role;
+              if (role === "Admin" && !adminId) adminId = userId;
+              else if (role !== "Admin" && adminId === userId) adminId = null;
+              io.emit(
+                "updateUsers",
+                users.map((u) => ({
+                  id: u.id,
+                  name: u.name,
+                  voted: u.voted,
+                  role: u.role,
+                }))
+              );
+              // Notify the affected user with setAdmin
+              const affectedUserSocket = io.sockets.sockets.get(userId);
+              if (affectedUserSocket) {
+                affectedUserSocket.emit("setAdmin", role === "Admin", adminId);
+              }
+            }
+          }
+        }
+      );
+    }
   });
 
   socket.on("vote", (voteData) => {
     votes[socket.id] = voteData.vote;
     users = users.map((u) => (u.id === socket.id ? { ...u, voted: true } : u));
     io.emit("updateVotes", votes, users);
-    io.emit("updateUsers", users);
+    io.emit(
+      "updateUsers",
+      users.map((u) => ({
+        id: u.id,
+        name: u.name,
+        voted: u.voted,
+        role: u.role,
+      }))
+    );
   });
 
   socket.on("newStory", (story) => {
@@ -211,7 +276,15 @@ io.on("connection", (socket) => {
       stories.push(story);
       votes = {};
       users.forEach((u) => (u.voted = false));
-      io.emit("updateUsers", users);
+      io.emit(
+        "updateUsers",
+        users.map((u) => ({
+          id: u.id,
+          name: u.name,
+          voted: u.voted,
+          role: u.role,
+        }))
+      );
       io.emit("updateStory", story);
       io.emit("hideVotes");
       io.emit("resetVoting");
@@ -230,10 +303,6 @@ io.on("connection", (socket) => {
           const updateData = {
             fields: { [JIRA_STORY_POINTS_FIELD]: parseInt(estimate) },
           };
-          console.log(
-            `Attempting to update Jira issue ${issueKey} with:`,
-            updateData
-          );
           await axios.put(
             `${process.env.JIRA_API_URL}/rest/api/3/issue/${issueKey}`,
             updateData,
@@ -257,16 +326,13 @@ io.on("connection", (socket) => {
         }
       }
 
-      // Update or insert the result with the final estimate
       db.get(
         "SELECT id FROM results WHERE sessionId = ? AND storySummary = ? AND storyDescription = ? ORDER BY timestamp DESC LIMIT 1",
         [currentSessionId, currentStory.summary, currentStory.description],
         (err, row) => {
-          if (err) {
+          if (err)
             console.error("Error checking existing result:", err.message);
-            saveResults(); // Fallback to insert if check fails
-          } else if (row) {
-            // Update existing result
+          else if (row) {
             db.run(
               "UPDATE results SET finalEstimate = ?, votes = ? WHERE id = ?",
               [
@@ -281,17 +347,12 @@ io.on("connection", (socket) => {
               ],
               (err) => {
                 if (err) console.error("Error updating result:", err.message);
-                else {
-                  console.log(
-                    "Updated result with final estimate:",
-                    currentSessionId
-                  );
+                else
                   getSessions((sessions) => io.emit("syncSessions", sessions));
-                }
               }
             );
           } else {
-            saveResults(); // Insert new result if none exists
+            saveResults();
           }
           io.emit("finalEstimateSubmitted");
         }
@@ -308,7 +369,6 @@ io.on("connection", (socket) => {
       proposedBy: users.find((u) => u.id === socket.id)?.name || "Unknown",
     };
     pendingSessions.push(newSession);
-    console.log("Proposed session:", newSession);
     io.emit("syncPendingSessions", pendingSessions);
   });
 
@@ -335,7 +395,6 @@ io.on("connection", (socket) => {
             if (err)
               console.error("Error inserting approved session:", err.message);
             else {
-              console.log("Approved session:", approvedSession);
               getSessions((sessions) => io.emit("syncSessions", sessions));
               pendingSessions.splice(sessionIndex, 1);
               io.emit("syncPendingSessions", pendingSessions);
@@ -362,10 +421,7 @@ io.on("connection", (socket) => {
         ],
         (err) => {
           if (err) console.error("Error saving session:", err.message);
-          else {
-            console.log("Saved session:", newSession);
-            getSessions((sessions) => io.emit("syncSessions", sessions));
-          }
+          else getSessions((sessions) => io.emit("syncSessions", sessions));
         }
       );
     }
@@ -384,10 +440,7 @@ io.on("connection", (socket) => {
         ],
         (err) => {
           if (err) console.error("Error updating session:", err.message);
-          else {
-            console.log("Updated session:", sessionData);
-            getSessions((sessions) => io.emit("syncSessions", sessions));
-          }
+          else getSessions((sessions) => io.emit("syncSessions", sessions));
         }
       );
     }
@@ -431,16 +484,20 @@ io.on("connection", (socket) => {
         }
 
         currentSessionId = sessionId;
-        console.log("Starting session:", newSession);
         io.emit("startSession", newSession);
-        getSessions((sessions) => {
-          console.log("Broadcasting syncSessions:", sessions);
-          io.emit("syncSessions", sessions);
-        });
+        getSessions((sessions) => io.emit("syncSessions", sessions));
         stories = [];
         votes = {};
         users.forEach((u) => (u.voted = false));
-        io.emit("updateUsers", users);
+        io.emit(
+          "updateUsers",
+          users.map((u) => ({
+            id: u.id,
+            name: u.name,
+            voted: u.voted,
+            role: u.role,
+          }))
+        );
       });
     }
   });
@@ -470,9 +527,16 @@ io.on("connection", (socket) => {
             stories = [];
             votes = {};
             users.forEach((u) => (u.voted = false));
-            console.log("Restarting session:", session);
             io.emit("startSession", session);
-            io.emit("updateUsers", users);
+            io.emit(
+              "updateUsers",
+              users.map((u) => ({
+                id: u.id,
+                name: u.name,
+                voted: u.voted,
+                role: u.role,
+              }))
+            );
             io.emit("resetVoting");
             io.emit("hideVotes");
           }
@@ -496,9 +560,16 @@ io.on("connection", (socket) => {
                 currentSessionId = null;
                 stories = [];
                 votes = {};
-                io.emit("updateUsers", users);
+                io.emit(
+                  "updateUsers",
+                  users.map((u) => ({
+                    id: u.id,
+                    name: u.name,
+                    voted: u.voted,
+                    role: u.role,
+                  }))
+                );
               }
-              console.log("Deleted session:", sessionId);
               getSessions((sessions) => io.emit("syncSessions", sessions));
             }
           );
@@ -556,7 +627,6 @@ io.on("connection", (socket) => {
               date: row.date,
               results: results,
             };
-            console.log("Sending sessionSummary:", currentSession.results);
             io.emit("sessionSummary", currentSession.results);
             sendToSlack(currentSession.results, currentSession);
             currentSessionId = null;
@@ -571,7 +641,6 @@ io.on("connection", (socket) => {
 
   socket.on("closeServer", () => {
     if (socket.id === adminId) {
-      console.log("Closing server, notifying all clients");
       io.emit("serverClosed");
       setTimeout(() => {
         io.disconnectSockets();
@@ -625,11 +694,16 @@ io.on("connection", (socket) => {
     console.log(`Client disconnected: ${socket.id}`);
     users = users.filter((u) => u.id !== socket.id);
     delete votes[socket.id];
-    if (socket.id === adminId) {
-      adminId = null;
-      console.log("Admin disconnected, adminId cleared");
-    }
-    io.emit("updateUsers", users);
+    if (socket.id === adminId) adminId = null;
+    io.emit(
+      "updateUsers",
+      users.map((u) => ({
+        id: u.id,
+        name: u.name,
+        voted: u.voted,
+        role: u.role,
+      }))
+    );
   });
 });
 
@@ -651,9 +725,8 @@ function saveResults() {
       "SELECT id FROM results WHERE sessionId = ? AND storySummary = ? AND storyDescription = ? ORDER BY timestamp DESC LIMIT 1",
       [currentSessionId, currentStory.summary, currentStory.description],
       (err, row) => {
-        if (err) {
-          console.error("Error checking existing result:", err.message);
-        } else if (row) {
+        if (err) console.error("Error checking existing result:", err.message);
+        else if (row) {
           db.run(
             "UPDATE results SET finalEstimate = ?, votes = ?, timestamp = ? WHERE id = ?",
             [
@@ -664,10 +737,7 @@ function saveResults() {
             ],
             (err) => {
               if (err) console.error("Error updating result:", err.message);
-              else {
-                console.log("Updated result for session:", currentSessionId);
-                getSessions((sessions) => io.emit("syncSessions", sessions));
-              }
+              else getSessions((sessions) => io.emit("syncSessions", sessions));
             }
           );
         } else {
@@ -683,10 +753,7 @@ function saveResults() {
             ],
             (err) => {
               if (err) console.error("Error saving result:", err.message);
-              else {
-                console.log("Saved result for session:", currentSessionId);
-                getSessions((sessions) => io.emit("syncSessions", sessions));
-              }
+              else getSessions((sessions) => io.emit("syncSessions", sessions));
             }
           );
         }
@@ -696,15 +763,10 @@ function saveResults() {
 }
 
 async function sendToSlack(sessionResults, currentSession) {
-  if (!sessionResults || sessionResults.length === 0) {
-    console.log("No session results to send to Slack");
-    return;
-  }
-
+  if (!sessionResults || sessionResults.length === 0) return;
   const sessionHeader = currentSession
     ? `*Session: ${currentSession.sessionName}*\n*Sprint: ${currentSession.sprint}*\n*Sprint Goal: ${currentSession.sprintGoal}*\n`
     : "*Session Summary*\n";
-
   const storyMap = {};
   sessionResults.forEach((s) => {
     const key = `${s.story.summary} - ${s.story.description}`;
@@ -712,7 +774,6 @@ async function sendToSlack(sessionResults, currentSession) {
       storyMap[key] = { votes: {}, finalEstimate: s.story.finalEstimate };
     s.votes.forEach((v) => (storyMap[key].votes[v.user] = v.vote));
   });
-
   const summaryText = Object.keys(storyMap)
     .map((storyKey) => {
       const [summary, description] = storyKey.split(" - ");
@@ -725,9 +786,7 @@ async function sendToSlack(sessionResults, currentSession) {
       return `Summary: "${summary}"\nDescription: "${description}"\nVotes: ${votesList}${finalEstimateText}`;
     })
     .join("\n\n");
-
   const slackMessage = { text: `${sessionHeader}${summaryText}` };
-
   try {
     const response = await axios.post(SLACK_WEBHOOK_URL, slackMessage);
     console.log("Slack message sent:", response.data);
