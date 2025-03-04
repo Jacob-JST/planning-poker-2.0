@@ -1,3 +1,4 @@
+// /react-planning-poker-2.0/client/src/components/Summary.js
 import React, { useEffect, useState } from "react";
 import { Box, Typography, Button, Grid, IconButton } from "@mui/material";
 import Brightness7Icon from "@mui/icons-material/Brightness7";
@@ -16,11 +17,43 @@ function Summary({
   onReturnToLobby,
 }) {
   const [animate, setAnimate] = useState(true);
+  const [sessionVelocity, setSessionVelocity] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let mounted = true;
+
+    const fetchVelocity = () => {
+      setLoading(true);
+      socket.emit("getSessionVelocity", sessionId);
+    };
+
     setAnimate(true);
+    fetchVelocity();
     setTimeout(() => setAnimate(false), 1000);
-  }, [summary]);
+
+    socket.on("sessionVelocity", (velocity) => {
+      if (mounted) {
+        console.log("Received sessionVelocity:", velocity);
+        setSessionVelocity(velocity || 0);
+        setLoading(false);
+      }
+    });
+
+    socket.on("updateVelocity", (newVelocity) => {
+      if (mounted) {
+        console.log("Received updateVelocity:", newVelocity);
+        setSessionVelocity(newVelocity);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      socket.off("sessionVelocity");
+      socket.off("updateVelocity");
+    };
+  }, [summary, sessionId, socket]);
 
   const aggregatedSummary = {};
   summary.forEach((s) => {
@@ -61,6 +94,9 @@ function Summary({
       </IconButton>
       <Typography variant="h4" gutterBottom>
         Session Summary: {sessionName}
+      </Typography>
+      <Typography variant="h6" gutterBottom>
+        Total Velocity: {loading ? "Calculating..." : sessionVelocity}
       </Typography>
       {cards.length > 0 ? (
         <Grid container spacing={2} justifyContent="center">

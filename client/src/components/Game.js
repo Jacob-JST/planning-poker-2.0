@@ -122,7 +122,7 @@ function Game({
     socket.on("startTimerSync", (seconds) => {
       console.log(`${myName}: Received startTimerSync with seconds:`, seconds);
       setMaxTimerValue(seconds);
-      setTimerValue(seconds); // Set initial timer value
+      setTimerValue(seconds);
       setLocalTimer(
         `${Math.floor(seconds / 60)}:${
           seconds % 60 < 10 ? "0" + (seconds % 60) : seconds % 60
@@ -214,10 +214,11 @@ function Game({
       setEstimateDisabled(true);
       setEndVotingDisabled(true);
       setTimerDisabled(true);
-      const estimateValue = parseInt(estimate, 10);
-      if (!isNaN(estimateValue)) {
-        setVelocity((prev) => prev + estimateValue);
-      }
+    });
+
+    socket.on("updateVelocity", (newVelocity) => {
+      console.log(`${myName}: Received updateVelocity:`, newVelocity);
+      setVelocity(newVelocity);
     });
 
     socket.on("resetVoting", () => {
@@ -242,6 +243,7 @@ function Game({
       socket.off("jiraImportResult");
       socket.off("jiraUpdateError");
       socket.off("finalEstimateSubmitted");
+      socket.off("updateVelocity");
       socket.off("resetVoting");
     };
   }, [socket, isAdmin, myName, myRole]);

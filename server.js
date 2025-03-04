@@ -31,7 +31,8 @@ const db = new sqlite3.Database("./sessions.db", (err) => {
       sprint TEXT,
       sprintGoal TEXT,
       date TEXT,
-      results TEXT
+      results TEXT,
+      velocity INTEGER DEFAULT 0
     )`);
     db.run(`CREATE TABLE IF NOT EXISTS results (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +52,6 @@ const db = new sqlite3.Database("./sessions.db", (err) => {
     )`,
       (err) => {
         if (err) console.error("Error creating users table:", err.message);
-        // Seed admin if not exists
         db.run(
           "INSERT OR IGNORE INTO users (id, name, role) VALUES (?, ?, ?)",
           [uuidv4(), "admin", "Admin"]
@@ -114,6 +114,7 @@ function getSessions(callback) {
           sprintGoal: row.sprintGoal,
           date: row.date,
           results: results,
+          velocity: row.velocity,
         });
         if (--pending === 0) callback(sessions);
       });
@@ -155,8 +156,41 @@ function getUsers(callback) {
   });
 }
 
+async function updateSessionVelocity(sessionId, estimateValue) {
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      db.run("BEGIN TRANSACTION");
+      db.run(
+        "UPDATE sessions SET velocity = COALESCE(velocity, 0) + ? WHERE id = ?",
+        [estimateValue, sessionId],
+        (err) => {
+          if (err) {
+            db.run("ROLLBACK");
+            reject(err);
+            return;
+          }
+          db.get(
+            "SELECT velocity FROM sessions WHERE id = ?",
+            [sessionId],
+            (err, row) => {
+              if (err) {
+                db.run("ROLLBACK");
+                reject(err);
+              } else {
+                db.run("COMMIT");
+                resolve(row?.velocity || 0);
+              }
+            }
+          );
+        }
+      );
+    });
+  });
+}
+
 io.on("connection", (socket) => {
   console.log(`New connection: ${socket.id}`);
+
   socket.on("login", (name) => {
     console.log(`User login attempt: ${name}, Socket ID: ${socket.id}`);
     db.get("SELECT * FROM users WHERE name = ?", [name], (err, row) => {
@@ -243,7 +277,6 @@ io.on("connection", (socket) => {
                   role: u.role,
                 }))
               );
-              // Notify the affected user with setAdmin
               const affectedUserSocket = io.sockets.sockets.get(userId);
               if (affectedUserSocket) {
                 affectedUserSocket.emit("setAdmin", role === "Admin", adminId);
@@ -292,7 +325,12 @@ io.on("connection", (socket) => {
   });
 
   socket.on("submitFinalEstimate", async ({ estimate, jiraUrl }) => {
-    if (socket.id === adminId && stories.length > 0) {
+    if (socket.id !== adminId || stories.length === 0) return;
+
+    try {
+      console.log(
+        `Processing final estimate: ${estimate} for session ${currentSessionId}`
+      );
       const currentStory = stories[stories.length - 1];
       currentStory.finalEstimate = estimate;
       io.emit("updateStory", currentStory);
@@ -326,38 +364,25 @@ io.on("connection", (socket) => {
         }
       }
 
-      db.get(
-        "SELECT id FROM results WHERE sessionId = ? AND storySummary = ? AND storyDescription = ? ORDER BY timestamp DESC LIMIT 1",
-        [currentSessionId, currentStory.summary, currentStory.description],
-        (err, row) => {
-          if (err)
-            console.error("Error checking existing result:", err.message);
-          else if (row) {
-            db.run(
-              "UPDATE results SET finalEstimate = ?, votes = ? WHERE id = ?",
-              [
-                estimate,
-                JSON.stringify(
-                  Object.keys(votes).map((id) => ({
-                    user: users.find((u) => u.id === id)?.name || "Unknown",
-                    vote: votes[id],
-                  }))
-                ),
-                row.id,
-              ],
-              (err) => {
-                if (err) console.error("Error updating result:", err.message);
-                else
-                  getSessions((sessions) => io.emit("syncSessions", sessions));
-              }
-            );
-          } else {
-            saveResults();
-          }
-          // Emit the estimate value with the event
-          io.emit("finalEstimateSubmitted", { estimate });
-        }
-      );
+      const estimateValue = parseInt(estimate, 10);
+      console.log(`Parsed estimate value: ${estimateValue}`);
+      if (!isNaN(estimateValue) && currentSessionId) {
+        const newVelocity = await updateSessionVelocity(
+          currentSessionId,
+          estimateValue
+        );
+        console.log(
+          `Updated velocity to: ${newVelocity} for session ${currentSessionId}`
+        );
+        io.emit("updateVelocity", newVelocity);
+        getSessions((sessions) => io.emit("syncSessions", sessions));
+      }
+
+      await saveResults();
+      io.emit("finalEstimateSubmitted", { estimate });
+    } catch (error) {
+      console.error(`Velocity update failed: ${error.message}`);
+      socket.emit("error", "Failed to submit final estimate");
     }
   });
 
@@ -583,7 +608,7 @@ io.on("connection", (socket) => {
     if (socket.id === adminId) {
       clearInterval(timer);
       let timeLeft = seconds;
-      io.emit("startTimerSync", seconds); // Emit initial duration to all clients
+      io.emit("startTimerSync", seconds);
       io.emit("timerUpdate", timeLeft);
       timer = setInterval(() => {
         timeLeft--;
@@ -704,6 +729,23 @@ io.on("connection", (socket) => {
         voted: u.voted,
         role: u.role,
       }))
+    );
+  });
+
+  socket.on("getSessionVelocity", (sessionId) => {
+    db.get(
+      "SELECT velocity FROM sessions WHERE id = ?",
+      [sessionId],
+      (err, row) => {
+        if (err) {
+          console.error("Error fetching session velocity:", err.message);
+          socket.emit("sessionVelocity", 0);
+        } else {
+          const velocity = row?.velocity ?? 0;
+          console.log(`Sending velocity ${velocity} for session ${sessionId}`);
+          socket.emit("sessionVelocity", velocity);
+        }
+      }
     );
   });
 });
