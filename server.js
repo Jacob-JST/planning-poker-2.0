@@ -354,7 +354,8 @@ io.on("connection", (socket) => {
           } else {
             saveResults();
           }
-          io.emit("finalEstimateSubmitted");
+          // Emit the estimate value with the event
+          io.emit("finalEstimateSubmitted", { estimate });
         }
       );
     }
@@ -582,7 +583,7 @@ io.on("connection", (socket) => {
     if (socket.id === adminId) {
       clearInterval(timer);
       let timeLeft = seconds;
-      io.emit("startTimerSync", seconds);
+      io.emit("startTimerSync", seconds); // Emit initial duration to all clients
       io.emit("timerUpdate", timeLeft);
       timer = setInterval(() => {
         timeLeft--;

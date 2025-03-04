@@ -1,3 +1,4 @@
+// /react-planning-poker-2.0/client/src/components/Game.js
 import React, { useState, useEffect } from "react";
 import {
   Box,
@@ -60,23 +61,40 @@ function Game({
   const [storyAnimation, setStoryAnimation] = useState(false);
   const [timerValue, setTimerValue] = useState(null);
   const [maxTimerValue, setMaxTimerValue] = useState(null);
+  const [velocity, setVelocity] = useState(0);
   const fibonacci = [1, 2, 3, 5, 8, 13, 21, 34];
 
   useEffect(() => {
     console.log(
       `${myName}: Game component mounted. isAdmin:`,
       isAdmin,
+      "myRole:",
+      myRole,
       "users:",
       localUsers,
       "socket connected:",
       socket.connected
     );
 
+    socket.on("startSession", () => {
+      setVelocity(0);
+      setTimerDisabled(!isAdmin);
+      console.log(`${myName}: Start session, timerDisabled:`, !isAdmin);
+    });
+
     socket.on("updateStory", (newStory) => {
       console.log(`${myName}: Received updateStory:`, newStory);
       setLocalStory(newStory);
-      setTimerDisabled(myRole !== "Admin");
       const hasFinalEstimate = !!newStory.finalEstimate;
+      setTimerDisabled(!isAdmin || hasFinalEstimate);
+      console.log(
+        `${myName}: Updated timerDisabled to`,
+        !isAdmin || hasFinalEstimate,
+        "isAdmin:",
+        isAdmin,
+        "hasFinalEstimate:",
+        hasFinalEstimate
+      );
       setEndVotingDisabled(hasFinalEstimate);
       setEstimateDisabled(!hasFinalEstimate);
       setFinalEstimate("");
@@ -101,6 +119,17 @@ function Game({
       setLocalUsers(usersData);
     });
 
+    socket.on("startTimerSync", (seconds) => {
+      console.log(`${myName}: Received startTimerSync with seconds:`, seconds);
+      setMaxTimerValue(seconds);
+      setTimerValue(seconds); // Set initial timer value
+      setLocalTimer(
+        `${Math.floor(seconds / 60)}:${
+          seconds % 60 < 10 ? "0" + (seconds % 60) : seconds % 60
+        }`
+      );
+    });
+
     socket.on("timerUpdate", (timeLeft) => {
       console.log(
         `${myName}: Timer update:`,
@@ -116,7 +145,6 @@ function Game({
         const timeStr = `${minutes}:${secs < 10 ? "0" + secs : secs}`;
         setLocalTimer(timeStr);
         setTimerValue(timeLeft);
-        if (maxTimerValue === null && timeLeft > 0) setMaxTimerValue(timeLeft);
         setTimerColor(timeLeft <= 10 ? "red" : "inherit");
         setPulseAnimation(false);
       } else {
@@ -176,12 +204,20 @@ function Game({
       alert("Failed to update Jira story points: " + error);
     });
 
-    socket.on("finalEstimateSubmitted", () => {
-      console.log(`${myName}: Received finalEstimateSubmitted`);
+    socket.on("finalEstimateSubmitted", ({ estimate }) => {
+      console.log(
+        `${myName}: Received finalEstimateSubmitted with estimate:`,
+        estimate
+      );
       setFinalEstimateSubmitted(true);
       setCardsEnabled(false);
       setEstimateDisabled(true);
       setEndVotingDisabled(true);
+      setTimerDisabled(true);
+      const estimateValue = parseInt(estimate, 10);
+      if (!isNaN(estimateValue)) {
+        setVelocity((prev) => prev + estimateValue);
+      }
     });
 
     socket.on("resetVoting", () => {
@@ -190,11 +226,15 @@ function Game({
       setCardsEnabled(true);
       setEndVotingDisabled(false);
       setEstimateDisabled(true);
+      setTimerDisabled(!isAdmin);
+      console.log(`${myName}: Reset voting, timerDisabled:`, !isAdmin);
     });
 
     return () => {
+      socket.off("startSession");
       socket.off("updateStory");
       socket.off("updateVotes");
+      socket.off("startTimerSync");
       socket.off("timerUpdate");
       socket.off("showVotes");
       socket.off("hideVotes");
@@ -226,6 +266,10 @@ function Game({
       setDescriptionInput("");
       setSubmitDisabled(true);
       setFinalEstimateSubmitted(false);
+      if (isAdmin) {
+        setTimerDisabled(false);
+        console.log(`${myName}: Submitted story, timerDisabled set to false`);
+      }
     }
   };
 
@@ -253,6 +297,7 @@ function Game({
       console.log(`${myName}: Starting timer:`, seconds);
       socket.emit("startTimer", seconds);
       setTimerDisabled(true);
+      setMaxTimerValue(seconds);
     }
   };
 
@@ -375,7 +420,11 @@ function Game({
             <Box sx={{ position: "relative", display: "inline-flex" }}>
               <CircularProgress
                 variant="determinate"
-                value={maxTimerValue ? (timerValue / maxTimerValue) * 100 : 0}
+                value={
+                  maxTimerValue && timerValue >= 0
+                    ? (timerValue / maxTimerValue) * 100
+                    : 0
+                }
                 size={40}
                 thickness={4}
                 sx={{ color: timerColor }}
@@ -419,6 +468,22 @@ function Game({
         >
           {darkMode ? <Brightness4Icon /> : <Brightness7Icon />}
         </IconButton>
+        <Box
+          sx={{
+            position: "absolute",
+            top: 60,
+            right: 8,
+            border: "1px solid",
+            borderColor: "grey.300",
+            borderRadius: 1,
+            p: 1,
+            bgcolor: darkMode ? "grey.800" : "grey.100",
+          }}
+        >
+          <Typography variant="body1" sx={{ fontWeight: "bold" }}>
+            Velocity: {velocity}
+          </Typography>
+        </Box>
         <Box
           sx={{
             width: "100%",
