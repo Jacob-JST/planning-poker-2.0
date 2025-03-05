@@ -45,6 +45,7 @@ function Game({
   const [submitDisabled, setSubmitDisabled] = useState(false);
   const [timerDisabled, setTimerDisabled] = useState(true);
   const [endVotingDisabled, setEndVotingDisabled] = useState(true);
+  const [revoteDisabled, setRevoteDisabled] = useState(true);
   const [estimateDisabled, setEstimateDisabled] = useState(true);
   const [finalEstimateSubmitted, setFinalEstimateSubmitted] = useState(false);
   const [localStory, setLocalStory] = useState(story);
@@ -79,6 +80,7 @@ function Game({
     socket.on("startSession", () => {
       setVelocity(0);
       setTimerDisabled(!isAdmin);
+      setRevoteDisabled(true);
       console.log(`${myName}: Start session, timerDisabled:`, !isAdmin);
     });
 
@@ -96,6 +98,7 @@ function Game({
         hasFinalEstimate
       );
       setEndVotingDisabled(hasFinalEstimate);
+      setRevoteDisabled(hasFinalEstimate);
       setEstimateDisabled(!hasFinalEstimate);
       setFinalEstimate("");
       setLocalMyVote(null);
@@ -213,6 +216,7 @@ function Game({
       setCardsEnabled(false);
       setEstimateDisabled(true);
       setEndVotingDisabled(true);
+      setRevoteDisabled(true);
       setTimerDisabled(true);
     });
 
@@ -226,9 +230,20 @@ function Game({
       setFinalEstimateSubmitted(false);
       setCardsEnabled(true);
       setEndVotingDisabled(false);
+      setRevoteDisabled(true);
       setEstimateDisabled(true);
       setTimerDisabled(!isAdmin);
       console.log(`${myName}: Reset voting, timerDisabled:`, !isAdmin);
+    });
+
+    socket.on("enableRevote", () => {
+      console.log(`${myName}: Enabling re-vote`);
+      setRevoteDisabled(false);
+    });
+
+    socket.on("disableRevote", () => {
+      console.log(`${myName}: Disabling re-vote`);
+      setRevoteDisabled(true);
     });
 
     return () => {
@@ -245,6 +260,8 @@ function Game({
       socket.off("finalEstimateSubmitted");
       socket.off("updateVelocity");
       socket.off("resetVoting");
+      socket.off("enableRevote");
+      socket.off("disableRevote");
     };
   }, [socket, isAdmin, myName, myRole]);
 
@@ -287,6 +304,7 @@ function Game({
       setFinalEstimate("");
       setEstimateDisabled(true);
       setEndVotingDisabled(true);
+      setRevoteDisabled(true);
       setFinalEstimateSubmitted(true);
       setCardsEnabled(false);
       setTimerDisabled(true);
@@ -311,6 +329,18 @@ function Game({
       setSubmitDisabled(false);
       setTimerDisabled(true);
       setEstimateDisabled(false);
+      if (isAdmin) setRevoteDisabled(false);
+    }
+  };
+
+  const handleRevote = () => {
+    if (!revoteDisabled) {
+      console.log(`${myName}: Initiating re-vote`);
+      socket.emit("revote");
+      setRevoteDisabled(true);
+      setCardsEnabled(true);
+      setLocalMyVote(null);
+      setLocalShowVotes(false);
     }
   };
 
@@ -667,6 +697,14 @@ function Game({
               disabled={endVotingDisabled}
             >
               End Voting
+            </Button>
+            <Button
+              id="revote"
+              onClick={handleRevote}
+              variant="outlined"
+              disabled={revoteDisabled}
+            >
+              Re-Vote
             </Button>
             <FormControl sx={{ width: 300 }}>
               <InputLabel>Final Estimate</InputLabel>

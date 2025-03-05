@@ -58,26 +58,37 @@ function Summary({
   const aggregatedSummary = {};
   summary.forEach((s) => {
     const key = `${s.story.summary} - ${s.story.description}`;
-    aggregatedSummary[key] = {
-      votes: {},
+    if (!aggregatedSummary[key]) aggregatedSummary[key] = [];
+    aggregatedSummary[key].push({
+      votes: s.votes,
       finalEstimate: s.story.finalEstimate,
-    };
-    s.votes.forEach((v) => (aggregatedSummary[key].votes[v.user] = v.vote));
+      round: s.round,
+    });
   });
 
   const cards = Object.keys(aggregatedSummary).map((storyKey) => {
     const [summaryText, description] = storyKey.split(" - ");
-    const votesList = Object.keys(aggregatedSummary[storyKey].votes)
-      .map(
-        (user) =>
-          `${displayFullName ? user : user.split(" ")[0]}: ${
-            aggregatedSummary[storyKey].votes[user]
-          }`
-      )
-      .join(", ");
-    const finalEstimate = aggregatedSummary[storyKey].finalEstimate;
-
-    return { summaryText, description, votesList, finalEstimate };
+    const rounds = aggregatedSummary[storyKey].map((roundData) => ({
+      round: roundData.round,
+      votesList: roundData.votes
+        .map(
+          (v) => `${displayFullName ? v.user : v.user.split(" ")[0]}: ${v.vote}`
+        )
+        .join(", "),
+      finalEstimate: roundData.finalEstimate,
+    }));
+    const latestFinalEstimate =
+      aggregatedSummary[storyKey]
+        .slice()
+        .reverse()
+        .find((roundData) => roundData.finalEstimate)?.finalEstimate ||
+      "Not set";
+    return {
+      summaryText,
+      description,
+      rounds,
+      finalEstimate: latestFinalEstimate,
+    };
   });
 
   const handleRestartSession = () => {
@@ -101,14 +112,14 @@ function Summary({
       {cards.length > 0 ? (
         <Grid container spacing={2} justifyContent="center">
           {cards.map((card, index) => (
-            <Grid item xs={12} sm={4} key={index}>
+            <Grid item xs={12} sm={6} key={index}>
               <Box
                 sx={{
                   border: "1px solid",
                   borderColor: "grey.300",
                   borderRadius: 1,
                   p: 2,
-                  height: 250,
+                  minHeight: 250,
                   display: "flex",
                   flexDirection: "column",
                   justifyContent: "space-between",
@@ -136,17 +147,26 @@ function Summary({
                   >
                     {card.description}
                   </Typography>
-                  <Typography variant="subtitle1" fontWeight="bold">
-                    Votes
-                  </Typography>
-                  <Typography variant="body2">{card.votesList}</Typography>
-                </Box>
-                <Box sx={{ textAlign: "left" }}>
+                  {card.rounds.map((round, rIndex) => (
+                    <Box key={rIndex} sx={{ mb: 1 }}>
+                      <Typography variant="subtitle2" fontWeight="bold">
+                        Round {round.round}
+                      </Typography>
+                      <Typography variant="body2">
+                        Votes: {round.votesList}
+                      </Typography>
+                      {round.finalEstimate && (
+                        <Typography variant="body2">
+                          Round Final Estimate: {round.finalEstimate}
+                        </Typography>
+                      )}
+                    </Box>
+                  ))}
                   <Typography variant="subtitle1" fontWeight="bold">
                     Final Estimate
                   </Typography>
-                  <Typography variant="body2">
-                    {card.finalEstimate || "Not set"}
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    {card.finalEstimate}
                   </Typography>
                 </Box>
               </Box>

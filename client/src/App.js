@@ -82,6 +82,7 @@ function App() {
     });
 
     socket.on("startSession", (sessionData) => {
+      console.log("Starting session with data:", sessionData);
       setCurrentSession(sessionData);
       setStory("");
       setMyVote(null);
@@ -118,6 +119,12 @@ function App() {
     socket.on("hideVotes", () => setShowVotes(false));
 
     socket.on("sessionSummary", (summary) => {
+      console.log(
+        "Received sessionSummary:",
+        summary,
+        "currentSession:",
+        currentSession
+      );
       if (currentSession) {
         setSessions((prev) => {
           const newSessions = [...prev];
@@ -131,6 +138,8 @@ function App() {
           return newSessions;
         });
         setScreen("summary");
+      } else {
+        console.error("currentSession is null or undefined");
       }
     });
 
@@ -143,6 +152,11 @@ function App() {
       alert(
         `Failed to connect to the server: ${error.message}. Please ensure the server is running on http://localhost:3001.`
       );
+    });
+
+    socket.on("error", (message) => {
+      console.error("Server error:", message);
+      alert(`Server error: ${message}`);
     });
 
     return () => {
@@ -161,6 +175,7 @@ function App() {
       socket.off("sessionSummary");
       socket.off("serverClosed");
       socket.off("connect_error");
+      socket.off("error");
     };
   }, [socket, screen, myName]);
 

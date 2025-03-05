@@ -595,7 +595,7 @@ function Home({
               </Box>
             </>
           )}
-          {!myRole === "Admin" && !isAdmin && (
+          {!(myRole === "Admin" || isAdmin) && (
             <Button
               variant="contained"
               onClick={handleSettingsClose}

@@ -1,4 +1,4 @@
-// src/components/AddSession.js
+// /react-planning-poker-2.0/client/src/components/AddSession.js
 import React from "react";
 import { Box, Typography, TextField, Button } from "@mui/material";
 
